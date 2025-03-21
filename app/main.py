@@ -8,17 +8,28 @@ from dotenv import load_dotenv
 # Load environment variables from .env file if it exists
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 # Get configuration from environment variables
 API_VERSION = os.getenv("API_VERSION", "1.0.0")
 ENABLE_GRADIO = os.getenv("ENABLE_GRADIO", "true").lower() in ("true", "1", "yes")
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG_MODE else logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s - %(pathname)s:%(lineno)d',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+
+# Set specific loggers to lower levels for more detailed output
+logging.getLogger('app.routers.video').setLevel(logging.DEBUG)
+logging.getLogger('app.utils.video_processor').setLevel(logging.DEBUG)
+logging.getLogger('app.utils.google_drive').setLevel(logging.DEBUG)
+logging.getLogger('httpx').setLevel(logging.INFO)
+logging.getLogger('urllib3').setLevel(logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(

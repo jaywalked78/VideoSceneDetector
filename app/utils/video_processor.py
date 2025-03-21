@@ -15,10 +15,25 @@ logger = logging.getLogger(__name__)
 
 class VideoProcessor:
     @staticmethod
-    def create_safe_directory(base_path: str, filename: str) -> str:
+    def create_safe_directory(base_path: str, filename: str, create_subfolder: bool = True) -> str:
         """
         Create a safe directory name from the filename and ensure it exists
+        
+        Args:
+            base_path: Base directory path
+            filename: Original filename
+            create_subfolder: Whether to create a subfolder based on filename
+                             If False, just returns the base_path
+        
+        Returns:
+            Path to the created directory
         """
+        # If not creating subfolder, just ensure base directory exists
+        if not create_subfolder:
+            os.makedirs(base_path, exist_ok=True)
+            logger.info(f"Using existing directory: {base_path}")
+            return base_path
+            
         # Create a safe directory name from the filename
         safe_dirname = slugify(Path(filename).stem, separator="_")
         full_path = os.path.join(base_path, safe_dirname)
@@ -78,8 +93,12 @@ class VideoProcessor:
         """
         try:
             start_time = time.time()
+            logger.info(f"Starting frame extraction for video: {video_path}")
+            logger.info(f"Output directory: {output_dir}")
+            logger.info(f"Scene threshold: {scene_threshold}")
             
             # Get video duration and metadata first
+            logger.info("Getting video metadata with ffprobe")
             probe_cmd = [
                 "ffprobe",
                 "-v", "quiet",
@@ -89,12 +108,22 @@ class VideoProcessor:
                 video_path
             ]
             
+            logger.debug(f"Running ffprobe command: {' '.join(probe_cmd)}")
             probe_result = subprocess.run(
                 probe_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
             )
+            
+            if probe_result.returncode != 0:
+                logger.error(f"ffprobe failed: {probe_result.stderr}")
+                return False, {
+                    "error": "Failed to get video information",
+                    "details": probe_result.stderr
+                }
+            
+            logger.info("Video metadata retrieved successfully")
             
             # Construct FFmpeg command for frame extraction
             output_pattern = os.path.join(output_dir, "frame_%06d.jpg")
@@ -115,18 +144,22 @@ class VideoProcessor:
             )
             
             if process.returncode != 0:
-                logger.error(f"FFmpeg error: {process.stderr}")
+                logger.error(f"FFmpeg error (return code {process.returncode}): {process.stderr[:500]}")
                 return False, {
                     "error": "FFmpeg processing failed",
                     "details": process.stderr
                 }
             
             # Parse metadata from FFmpeg output
+            logger.info("Parsing metadata from FFmpeg output")
             scene_metadata = VideoProcessor.parse_ffmpeg_metadata(process.stderr)
+            logger.info(f"Parsed {len(scene_metadata)} scene changes")
             
             # Count extracted frames
             frames = [f for f in os.listdir(output_dir) if f.startswith("frame_") and f.endswith(".jpg")]
             processing_time = time.time() - start_time
+            
+            logger.info(f"Extracted {len(frames)} frames in {processing_time:.2f} seconds")
             
             result = {
                 "frames_extracted": len(frames),
@@ -140,11 +173,11 @@ class VideoProcessor:
                 "video_info": probe_result.stdout
             }
             
-            logger.info(f"Frame extraction complete: {result}")
+            logger.info(f"Frame extraction complete: {len(frames)} frames extracted")
             return True, result
             
         except Exception as e:
-            logger.error(f"Error in frame extraction: {str(e)}")
+            logger.exception(f"Error in frame extraction: {str(e)}")
             return False, {"error": str(e)}
 
     @staticmethod

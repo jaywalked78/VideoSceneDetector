@@ -1,11 +1,14 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from app.models.video import VideoProcessRequest, VideoProcessResponse, HealthResponse, GoogleDriveVideoProcessRequest
 from app.utils.video_processor import VideoProcessor
 from app.utils.google_drive import GoogleDriveService
 import logging
 import json
 import os
+import time
+import glob
 from pathlib import Path
+import requests
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -101,107 +104,227 @@ async def process_video(request: VideoProcessRequest) -> VideoProcessResponse:
         )
 
 @router.post("/process-drive-video", response_model=VideoProcessResponse)
-async def process_drive_video(request: GoogleDriveVideoProcessRequest) -> VideoProcessResponse:
+async def process_drive_video(request: GoogleDriveVideoProcessRequest, background_tasks: BackgroundTasks) -> VideoProcessResponse:
     """
     Process a video file from Google Drive:
     1. Create a safe directory for the video
-    2. Download the file from Google Drive directly to the directory
+    2. Download the file from Google Drive directly to the directory 
     3. Extract frames using FFmpeg
     4. Send results to callback URL
+    
+    Returns immediately with a success status while processing continues in background.
     """
+    logger.info(f"Processing video from Google Drive with file_id: {request.file_id}")
+    
     try:
-        # Initialize services
+        # Initialize services for validation
         processor = VideoProcessor()
         drive_service = GoogleDriveService()
         
-        # First get metadata from Google Drive to get the filename if not provided
+        # Validate request by checking if file exists in Google Drive
+        logger.info("Validating Google Drive file exists")
         try:
             file_metadata = drive_service.get_file_metadata(request.file_id)
-            filename = request.file_name or file_metadata.get('name', f"drive_file_{request.file_id}")
+            file_name = request.file_name or file_metadata.get('name', f'video_{request.file_id}')
+            logger.info(f"File validated: {file_name} ({file_metadata.get('mimeType', 'unknown type')})")
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to get file metadata from Google Drive: {str(e)}"
+            logger.error(f"File validation failed: {str(e)}")
+            return VideoProcessResponse(
+                success=False,
+                message=f"Failed to validate file in Google Drive: {str(e)}",
+                error=str(e)
             )
         
-        # Create safe directory for the video
-        if request.create_subfolder:
-            output_dir = processor.create_safe_directory(
-                request.destination_folder,
-                filename
-            )
-        else:
-            output_dir = request.destination_folder
-            os.makedirs(output_dir, exist_ok=True)
-        
-        # Construct the full path for the downloaded file
-        video_path = os.path.join(output_dir, filename)
-        
-        # Download the file from Google Drive
-        success, result = drive_service.download_file(
-            request.file_id,
-            video_path
+        # Add process_video_task to background tasks
+        background_tasks.add_task(
+            process_video_task,
+            file_id=request.file_id,
+            file_name=file_name,
+            destination_folder=request.destination_folder,
+            callback_url=request.callback_url,
+            scene_threshold=request.scene_threshold,
+            create_subfolder=request.create_subfolder
         )
         
-        if not success:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to download file from Google Drive: {result}"
-            )
-        
-        # Extract frames
-        video_path = result  # This is the path where the file was downloaded
-        success, extraction_result = processor.extract_frames(
-            video_path,
-            output_dir,
-            request.scene_threshold
+        # Return immediate success response
+        return VideoProcessResponse(
+            success=True,
+            message=f"Processing started for file: {file_name}. Results will be sent to callback URL when complete.",
         )
-        
-        if not success:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Frame extraction failed: {extraction_result.get('error', 'Unknown error')}"
-            )
-        
-        # Prepare response
-        response_data = {
-            "success": True,
-            "message": "Video from Google Drive processed successfully",
-            "frames_extracted": extraction_result["frames_extracted"],
-            "output_directory": extraction_result["output_directory"],
-            "processing_time": extraction_result["processing_time"],
-            "scene_metadata": extraction_result["scene_metadata"],
-            "video_info": json.loads(extraction_result["video_info"]) if extraction_result["video_info"] else None,
-            "file_path": video_path
-        }
-        
-        # Clean up ffmpeg output for callback
-        callback_data = {**response_data}
-        if "ffmpeg_output" in extraction_result:
-            stderr_sample = extraction_result["ffmpeg_output"]["stderr"][:1000]
-            callback_data["ffmpeg_output"] = {
-                "stderr_sample": stderr_sample + ("..." if len(extraction_result["ffmpeg_output"]["stderr"]) > 1000 else "")
-            }
-        
-        # Send callback
-        logger.info(f"Sending callback to: {request.callback_url}")
-        callback_success = processor.send_callback(
-            str(request.callback_url),
-            callback_data
-        )
-        
-        if not callback_success:
-            logger.warning(f"Failed to send callback to {request.callback_url}")
-            response_data["message"] += ", but callback failed"
-        
-        return VideoProcessResponse(**response_data)
         
     except Exception as e:
-        logger.error(f"Error processing video from Google Drive: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing video from Google Drive: {str(e)}"
+        logger.exception(f"Error starting video processing: {str(e)}")
+        return VideoProcessResponse(
+            success=False,
+            message=f"Error initiating video processing: {str(e)}",
+            error=str(e)
         )
+
+def process_video_task(
+    file_id: str,
+    file_name: str,
+    destination_folder: str,
+    callback_url: str,
+    scene_threshold: float = 0.4,
+    create_subfolder: bool = True
+):
+    """
+    Background task to process video file and send callback when complete.
+    """
+    start_time = time.time()
+    process_id = f"{int(start_time)}_{file_id[-6:]}"
+    logger.info(f"Starting background process {process_id} for file: {file_name}")
+    
+    # Initialize services
+    processor = VideoProcessor()
+    drive_service = GoogleDriveService()
+    
+    try:
+        # Create safe directory for video
+        logger.info(f"Creating output directory in {destination_folder}")
+        output_dir = processor.create_safe_directory(
+            destination_folder,
+            file_name,
+            create_subfolder=create_subfolder
+        )
+        
+        # Download file from Google Drive
+        logger.info(f"Downloading file from Google Drive to {output_dir}")
+        download_path = os.path.join(output_dir, file_name)
+        success, download_result = drive_service.download_file(file_id, download_path)
+        
+        if not success:
+            error_msg = f"Failed to download file from Google Drive: {download_result}"
+            logger.error(error_msg)
+            send_callback(callback_url, {
+                "success": False,
+                "message": error_msg,
+                "error": download_result,
+                "output_directory": output_dir,
+                "process_id": process_id,
+                "file_id": file_id,
+                "file_name": file_name,
+                "processing_time": time.time() - start_time
+            })
+            return
+        
+        logger.info(f"Successfully downloaded file to {download_result}")
+        
+        # Extract frames using FFmpeg
+        logger.info(f"Extracting frames with scene_threshold={scene_threshold}")
+        success, extraction_result = processor.extract_frames(
+            download_path,
+            output_dir,
+            scene_threshold=scene_threshold
+        )
+        
+        if not success:
+            error_msg = f"Failed to extract frames: {extraction_result.get('error', 'Unknown error')}"
+            logger.error(error_msg)
+            send_callback(callback_url, {
+                "success": False,
+                "message": error_msg,
+                "error": extraction_result.get('error', 'Unknown error'),
+                "output_directory": output_dir,
+                "process_id": process_id,
+                "file_id": file_id,
+                "file_name": file_name,
+                "processing_time": time.time() - start_time
+            })
+            return
+        
+        # Collect frame files info
+        frame_files = sorted(glob.glob(os.path.join(output_dir, "frame_*.jpg")))
+        frames_info = []
+        for frame_file in frame_files:
+            frame_path = Path(frame_file)
+            frames_info.append({
+                "filename": frame_path.name,
+                "path": str(frame_path),
+                "size_bytes": frame_path.stat().st_size
+            })
+        
+        # Prepare final callback data with complete metadata
+        total_processing_time = time.time() - start_time
+        callback_data = {
+            "success": True,
+            "message": f"Video processing completed successfully. Extracted {len(frames_info)} frames.",
+            "process_id": process_id,
+            "file_id": file_id,
+            "file_name": file_name,
+            "frames_extracted": len(frames_info),
+            "frames_info": frames_info,
+            "output_directory": output_dir,
+            "processing_time": round(total_processing_time, 2),
+            "extraction_time": extraction_result.get("processing_time", 0),
+            "download_time": round(extraction_result.get("processing_time", 0) - total_processing_time, 2)
+        }
+        
+        # Include scene metadata if available
+        if "scene_metadata" in extraction_result:
+            callback_data['scene_metadata'] = extraction_result["scene_metadata"]
+        
+        # Include video info if available
+        if "video_info" in extraction_result:
+            try:
+                callback_data['video_info'] = json.loads(extraction_result["video_info"]) if extraction_result["video_info"] else None
+            except:
+                callback_data['video_info'] = extraction_result["video_info"]
+        
+        # Include a sample of ffmpeg output 
+        if "ffmpeg_output" in extraction_result:
+            callback_data['ffmpeg_output'] = {
+                'stdout_sample': extraction_result["ffmpeg_output"].get('stdout', '')[:500],
+                'stderr_sample': extraction_result["ffmpeg_output"].get('stderr', '')[:500]
+            }
+        
+        logger.info(f"Processing complete for file {file_name}. Sending callback with {len(frames_info)} frames.")
+        # Send the final callback
+        send_callback(callback_url, callback_data)
+        
+    except Exception as e:
+        logger.exception(f"Error in background processing: {str(e)}")
+        try:
+            send_callback(callback_url, {
+                "success": False,
+                "message": f"Error during video processing: {str(e)}",
+                "error": str(e),
+                "process_id": process_id,
+                "file_id": file_id,
+                "file_name": file_name,
+                "processing_time": time.time() - start_time
+            })
+        except Exception as callback_error:
+            logger.error(f"Failed to send error callback: {str(callback_error)}")
+
+def send_callback(callback_url: str, data: dict) -> bool:
+    """
+    Send callback with proper error handling and logging
+    """
+    if not callback_url:
+        logger.warning("No callback URL provided. Skipping callback.")
+        return False
+        
+    logger.info(f"Sending callback to: {callback_url}")
+    try:
+        response = requests.post(
+            callback_url,
+            json=data,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+        
+        if response.status_code >= 200 and response.status_code < 300:
+            logger.info(f"Callback sent successfully. Status: {response.status_code}")
+            return True
+        else:
+            logger.warning(f"Callback received non-success response: {response.status_code}")
+            logger.warning(f"Response: {response.text[:500]}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Failed to send callback: {str(e)}")
+        return False
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:

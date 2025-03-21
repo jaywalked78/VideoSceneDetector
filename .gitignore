@@ -1,7 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
-*.class
+*$py.class
 *.so
 .Python
 env/
@@ -23,17 +23,33 @@ var/
 # Virtual Environment
 venv/
 ENV/
-env/
 
-# Authentication files
-token.pickle
-credentials.json
-
-# Local configuration
-.env
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # Logs
 *.log
+logs/
+server_startup.log
+server.log
+
+# Environment variables
+.env
+
+# OAuth credentials
+token.pickle
+credentials.json
+
+# Temp files
+temp/
+tmp/
+
+# Operating system files
+.DS_Store
+Thumbs.db
 
 # Video and image files
 *.mp4

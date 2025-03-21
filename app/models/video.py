@@ -33,6 +33,9 @@ class VideoProcessRequest(BaseModel):
 class VideoProcessResponse(BaseModel):
     """
     Response model for video processing results
+    
+    When used for immediate response, only success and message are required.
+    All other fields are populated in the callback when processing is complete.
     """
     success: bool
     message: str
@@ -44,6 +47,7 @@ class VideoProcessResponse(BaseModel):
     video_info: Optional[str] = None
     error: Optional[str] = None
     file_path: Optional[str] = None
+    process_id: Optional[str] = None
 
 class HealthResponse(BaseModel):
     """

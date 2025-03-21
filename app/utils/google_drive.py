@@ -124,13 +124,15 @@ class GoogleDriveService:
             Dictionary with file metadata
         """
         try:
+            logger.info(f"Getting metadata for file ID: {file_id}")
             file_metadata = self.drive_service.files().get(
                 fileId=file_id, 
                 fields='id, name, mimeType, size, modifiedTime, createdTime'
             ).execute()
+            logger.info(f"Retrieved metadata for file: {file_metadata.get('name', 'Unknown')} ({file_metadata.get('mimeType', 'unknown type')})")
             return file_metadata
         except Exception as e:
-            logger.error(f"Error getting file metadata for file ID {file_id}: {str(e)}")
+            logger.exception(f"Error getting file metadata for file ID {file_id}: {str(e)}")
             raise
 
     def download_file(self, file_id: str, destination_path: str) -> Tuple[bool, str]:
@@ -145,6 +147,9 @@ class GoogleDriveService:
             Tuple of (success: bool, message_or_path: str)
         """
         try:
+            logger.info(f"Starting download for file ID: {file_id}")
+            logger.info(f"Destination path: {destination_path}")
+            
             # First get the file metadata to get the filename if needed
             file_metadata = self.get_file_metadata(file_id)
             
@@ -153,26 +158,47 @@ class GoogleDriveService:
             if not file_name:  # If destination_path is a directory or ends with '/'
                 file_name = file_metadata['name']
                 destination_path = os.path.join(destination_path, file_name)
+                logger.info(f"Adjusted destination path to: {destination_path}")
             
             # Make sure the directory exists
             os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+            logger.info(f"Ensured directory exists: {os.path.dirname(destination_path)}")
             
             # Download the file
+            logger.info("Initiating download request")
             request = self.drive_service.files().get_media(fileId=file_id)
             
             with open(destination_path, 'wb') as f:
                 downloader = MediaIoBaseDownload(f, request)
                 done = False
+                download_progress = 0
                 while not done:
                     status, done = downloader.next_chunk()
-                    logger.info(f"Download progress: {int(status.progress() * 100)}%")
+                    new_progress = int(status.progress() * 100)
+                    if new_progress - download_progress >= 20 or new_progress == 100:  # Log every 20% progress
+                        download_progress = new_progress
+                        logger.info(f"Download progress: {download_progress}%")
             
-            logger.info(f"File downloaded successfully to {destination_path}")
+            # Verify download
+            if os.path.exists(destination_path):
+                file_size = os.path.getsize(destination_path)
+                logger.info(f"File downloaded successfully to {destination_path} ({file_size} bytes)")
+                
+                if 'size' in file_metadata:
+                    expected_size = int(file_metadata['size'])
+                    if file_size != expected_size:
+                        logger.warning(f"Downloaded file size ({file_size}) doesn't match expected size ({expected_size})")
+                    else:
+                        logger.info("File size verification successful")
+            else:
+                logger.error(f"File wasn't created at {destination_path}")
+                return False, f"File download failed: File wasn't created at {destination_path}"
+            
             return True, destination_path
             
         except Exception as e:
             error_msg = f"Error downloading file {file_id}: {str(e)}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
             return False, error_msg
     
     async def download_file_async(self, file_id: str, destination_path: str, background_tasks: Optional[BackgroundTasks] = None) -> Dict:
