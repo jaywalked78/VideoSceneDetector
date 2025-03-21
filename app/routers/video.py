@@ -103,8 +103,8 @@ async def process_video(request: VideoProcessRequest) -> VideoProcessResponse:
             detail=f"Error processing video: {str(e)}"
         )
 
-@router.post("/process-drive-video", response_model=VideoProcessResponse)
-async def process_drive_video(request: GoogleDriveVideoProcessRequest, background_tasks: BackgroundTasks) -> VideoProcessResponse:
+@router.post("/process-drive-video")
+async def process_drive_video(request: GoogleDriveVideoProcessRequest, background_tasks: BackgroundTasks):
     """
     Process a video file from Google Drive:
     1. Create a safe directory for the video
@@ -131,11 +131,13 @@ async def process_drive_video(request: GoogleDriveVideoProcessRequest, backgroun
             logger.info(f"File validated: {file_name} ({file_metadata.get('mimeType', 'unknown type')})")
         except Exception as e:
             logger.error(f"File validation failed: {str(e)}")
-            return VideoProcessResponse(
-                success=False,
-                message=f"Failed to validate file in Google Drive: {str(e)}",
-                error=str(e)
-            )
+            # Return clean error response without nulls
+            return {
+                "success": False,
+                "message": f"Failed to validate file in Google Drive: {str(e)}",
+                "error": str(e),
+                "file_id": request.file_id
+            }
         
         # Add process_video_task to background tasks
         background_tasks.add_task(
@@ -150,19 +152,23 @@ async def process_drive_video(request: GoogleDriveVideoProcessRequest, backgroun
             force_download=request.force_download
         )
         
-        # Return immediate success response
-        return VideoProcessResponse(
-            success=True,
-            message=f"Processing started for file: {file_name}. Results will be sent to callback URL when complete.",
-        )
+        # Return clean success response without nulls
+        return {
+            "success": True,
+            "message": f"Processing started for file: {file_name}. Results will be sent to callback URL when complete.",
+            "file_id": request.file_id,
+            "file_name": file_name
+        }
         
     except Exception as e:
         logger.exception(f"Error starting video processing: {str(e)}")
-        return VideoProcessResponse(
-            success=False,
-            message=f"Error initiating video processing: {str(e)}",
-            error=str(e)
-        )
+        # Return clean error response without nulls
+        return {
+            "success": False,
+            "message": f"Error initiating video processing: {str(e)}",
+            "error": str(e),
+            "file_id": request.file_id
+        }
 
 def process_video_task(
     file_id: str,
