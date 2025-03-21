@@ -22,7 +22,6 @@ class GoogleDriveVideoProcessRequest(BaseModel):
     create_subfolder: bool = True  # Whether to create a subfolder for the video
     delete_after_processing: Optional[bool] = False  # Whether to delete video file after successful callback
     force_download: Optional[bool] = False  # Whether to force download even if file exists locally
-    use_gpu: Optional[bool] = False  # Whether to use GPU acceleration for video processing
 
 class VideoProcessRequest(BaseModel):
     """
