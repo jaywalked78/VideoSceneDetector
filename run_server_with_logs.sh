@@ -17,6 +17,32 @@ echo -e "${BLUE}==================================================${NC}"
 # Set environment variable to enable debug mode
 export DEBUG_MODE=true
 
+# Set environment variables for unbuffered output
+export FORCE_COLOR=1
+export NODE_ENV=development
+
+# Ensure terminal emulation is enabled for progress display
+export TERM=xterm-256color
+
+# Create logs directory if it doesn't exist
+mkdir -p logs
+
+# Define log file with timestamp
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+LOG_FILE="logs/server_${TIMESTAMP}.log"
+
+echo "Starting server with progress display enabled..."
+echo "Logs will be saved to: $LOG_FILE"
+
+# Set environment variables for webhook notifications
+if [ -z "$WEBHOOK_URL" ]; then
+  export WEBHOOK_URL="http://localhost:3001/webhook/video-processing"
+  echo -e "${YELLOW}Using default webhook URL: ${WEBHOOK_URL}${NC}"
+  echo -e "${YELLOW}Set WEBHOOK_URL environment variable to change${NC}"
+else
+  echo -e "${GREEN}Using configured webhook URL: ${WEBHOOK_URL}${NC}"
+fi
+
 # Function to kill processes using a specific port
 kill_port_processes() {
     local PORT=$1
@@ -105,3 +131,7 @@ echo -e "${BLUE}==================================================${NC}"
 # Start uvicorn with debug log level
 # Important: Don't redirect output for live logging
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug 
+
+# Start the server with output going to both console and log file
+# Using stdbuf to disable buffering
+stdbuf -o0 -e0 node dist/main.js | tee -a "$LOG_FILE" 

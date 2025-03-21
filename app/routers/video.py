@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Add a dictionary to track which tasks have already sent webhooks
+webhook_sent_tracker = {}
+
 @router.post("/process-video", response_model=VideoProcessResponse)
 async def process_video(request: VideoProcessRequest) -> VideoProcessResponse:
     """
@@ -187,11 +190,14 @@ def process_video_task(
     process_id = f"{int(start_time)}_{file_id[-6:]}"
     logger.info(f"Starting background process {process_id} for file: {file_name}")
     
-    # Initialize services
-    processor = VideoProcessor()
-    drive_service = GoogleDriveService()
+    # Add this to track if we've already sent a webhook
+    webhook_sent = False
     
     try:
+        # Initialize services
+        processor = VideoProcessor()
+        drive_service = GoogleDriveService()
+        
         # Create safe directory for video
         logger.info(f"Creating output directory in {destination_folder}")
         output_dir = processor.create_safe_directory(
@@ -232,6 +238,7 @@ def process_video_task(
                     "file_name": file_name,
                     "processing_time": time.time() - start_time
                 })
+                webhook_sent = True
                 return
         
         logger.info(f"Using video file at: {download_path}")
@@ -257,6 +264,7 @@ def process_video_task(
                 "file_name": file_name,
                 "processing_time": time.time() - start_time
             })
+            webhook_sent = True
             return
         
         # Collect frame files info
@@ -305,57 +313,47 @@ def process_video_task(
                 'stderr_sample': extraction_result["ffmpeg_output"].get('stderr', '')[:500]
             }
         
-        logger.info(f"Processing complete for file {file_name}. Sending callback with {len(frames_info)} frames.")
-        # Send the final callback
-        callback_success = send_callback(callback_url, callback_data)
+        # Prepare for file deletion if needed
+        file_deleted = False
+        deletion_error = None
         
-        # Only delete the file if delete_after_processing is True AND the callback was successful
-        if delete_after_processing and callback_success:
+        # Only delete the file if delete_after_processing is True
+        if delete_after_processing:
             logger.info(f"Deleting video file after successful processing: {download_path}")
             try:
                 os.remove(download_path)
                 logger.info(f"Successfully deleted video file: {download_path}")
-                
-                # Add deletion info to callback data for a follow-up confirmation
-                deletion_callback_data = {
-                    "success": True,
-                    "message": f"Video file deleted after successful processing",
-                    "process_id": process_id,
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "output_directory": output_dir,
-                    "file_deleted": True
-                }
-                # Send a follow-up callback to confirm deletion
-                send_callback(callback_url, deletion_callback_data)
+                file_deleted = True
             except Exception as e:
                 logger.error(f"Failed to delete video file {download_path}: {str(e)}")
-                # Notify about deletion failure
-                send_callback(callback_url, {
-                    "success": True,
-                    "message": f"Processing successful but file deletion failed: {str(e)}",
-                    "process_id": process_id,
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "output_directory": output_dir,
-                    "file_deleted": False,
-                    "deletion_error": str(e)
-                })
+                deletion_error = str(e)
+        
+        # Include file deletion info in the main callback
+        callback_data["file_deleted"] = file_deleted
+        if deletion_error:
+            callback_data["deletion_error"] = deletion_error
+        
+        logger.info(f"Processing complete for file {file_name}. Sending callback with {len(frames_info)} frames.")
+        # Send a single callback with all information
+        send_callback(callback_url, callback_data)
+        webhook_sent = True
         
     except Exception as e:
         logger.exception(f"Error in background processing: {str(e)}")
-        try:
-            send_callback(callback_url, {
-                "success": False,
-                "message": f"Error during video processing: {str(e)}",
-                "error": str(e),
-                "process_id": process_id,
-                "file_id": file_id,
-                "file_name": file_name,
-                "processing_time": time.time() - start_time
-            })
-        except Exception as callback_error:
-            logger.error(f"Failed to send error callback: {str(callback_error)}")
+        if not webhook_sent:
+            try:
+                send_callback(callback_url, {
+                    "success": False,
+                    "message": f"Error during video processing: {str(e)}",
+                    "error": str(e),
+                    "process_id": process_id,
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "processing_time": time.time() - start_time
+                })
+                webhook_sent = True
+            except Exception as callback_error:
+                logger.error(f"Failed to send error callback: {str(callback_error)}")
 
 def send_callback(callback_url: str, data: dict) -> bool:
     """
@@ -364,6 +362,12 @@ def send_callback(callback_url: str, data: dict) -> bool:
     if not callback_url:
         logger.warning("No callback URL provided. Skipping callback.")
         return False
+    
+    # Check for process_id to deduplicate webhooks
+    process_id = data.get("process_id")
+    if process_id and process_id in webhook_sent_tracker:
+        logger.info(f"Webhook already sent for process {process_id}, skipping duplicate")
+        return True
         
     logger.info(f"Sending callback to: {callback_url}")
     try:
@@ -376,6 +380,9 @@ def send_callback(callback_url: str, data: dict) -> bool:
         
         if response.status_code >= 200 and response.status_code < 300:
             logger.info(f"Callback sent successfully. Status: {response.status_code}")
+            # Track that we've sent a webhook for this process
+            if process_id:
+                webhook_sent_tracker[process_id] = True
             return True
         else:
             logger.warning(f"Callback received non-success response: {response.status_code}")
@@ -391,4 +398,20 @@ async def health_check() -> HealthResponse:
     """
     Health check endpoint
     """
-    return HealthResponse(status="healthy") 
+    return HealthResponse(status="healthy")
+
+def cleanup_webhook_tracker():
+    """Remove entries older than 1 hour from the webhook tracker"""
+    current_time = time.time()
+    keys_to_remove = []
+    
+    for process_id in webhook_sent_tracker:
+        try:
+            timestamp = int(process_id.split('_')[0])
+            if current_time - timestamp > 3600:  # 1 hour
+                keys_to_remove.append(process_id)
+        except:
+            pass
+    
+    for key in keys_to_remove:
+        del webhook_sent_tracker[key] 

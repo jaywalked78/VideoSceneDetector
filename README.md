@@ -192,3 +192,16 @@ The application is configurable via environment variables. See `.env.example` fo
 ## License
 
 MIT 
+
+# Project Dependencies
+
+## Core Dependencies
+- ...existing dependencies...
+
+## Media Processing
+- **get-video-duration**: Used to retrieve video duration information for progress tracking in FFMPEG operations
+- **ffmpeg** (system dependency): Required for video processing operations
+
+## System Utilities
+- Memory management utilities (built-in)
+- FFMPEG progress tracking (built-in) 
