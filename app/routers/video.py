@@ -108,9 +108,11 @@ async def process_drive_video(request: GoogleDriveVideoProcessRequest, backgroun
     """
     Process a video file from Google Drive:
     1. Create a safe directory for the video
-    2. Download the file from Google Drive directly to the directory 
-    3. Extract frames using FFmpeg
-    4. Send results to callback URL
+    2. Check if file already exists locally, skip download if it does (unless force_download=True)
+    3. Download the file from Google Drive directly to the directory if needed
+    4. Extract frames using FFmpeg
+    5. Send results to callback URL
+    6. Optionally delete the video file after processing if delete_after_processing is true
     
     Returns immediately with a success status while processing continues in background.
     """
@@ -143,7 +145,9 @@ async def process_drive_video(request: GoogleDriveVideoProcessRequest, backgroun
             destination_folder=request.destination_folder,
             callback_url=request.callback_url,
             scene_threshold=request.scene_threshold,
-            create_subfolder=request.create_subfolder
+            create_subfolder=request.create_subfolder,
+            delete_after_processing=request.delete_after_processing,
+            force_download=request.force_download
         )
         
         # Return immediate success response
@@ -166,7 +170,9 @@ def process_video_task(
     destination_folder: str,
     callback_url: str,
     scene_threshold: float = 0.4,
-    create_subfolder: bool = True
+    create_subfolder: bool = True,
+    delete_after_processing: bool = False,
+    force_download: bool = False
 ):
     """
     Background task to process video file and send callback when complete.
@@ -188,27 +194,41 @@ def process_video_task(
             create_subfolder=create_subfolder
         )
         
-        # Download file from Google Drive
-        logger.info(f"Downloading file from Google Drive to {output_dir}")
+        # Define download path
         download_path = os.path.join(output_dir, file_name)
-        success, download_result = drive_service.download_file(file_id, download_path)
         
-        if not success:
-            error_msg = f"Failed to download file from Google Drive: {download_result}"
-            logger.error(error_msg)
-            send_callback(callback_url, {
-                "success": False,
-                "message": error_msg,
-                "error": download_result,
-                "output_directory": output_dir,
-                "process_id": process_id,
-                "file_id": file_id,
-                "file_name": file_name,
-                "processing_time": time.time() - start_time
-            })
-            return
+        # Check if file already exists locally
+        file_already_exists = os.path.exists(download_path)
         
-        logger.info(f"Successfully downloaded file to {download_result}")
+        if file_already_exists and not force_download:
+            logger.info(f"File already exists at {download_path}. Skipping download.")
+            download_result = download_path
+        else:
+            # Download file from Google Drive
+            if file_already_exists:
+                logger.info(f"File exists but force_download=True. Re-downloading file.")
+            else:
+                logger.info(f"File doesn't exist locally. Downloading from Google Drive.")
+                
+            logger.info(f"Downloading file from Google Drive to {output_dir}")
+            success, download_result = drive_service.download_file(file_id, download_path)
+            
+            if not success:
+                error_msg = f"Failed to download file from Google Drive: {download_result}"
+                logger.error(error_msg)
+                send_callback(callback_url, {
+                    "success": False,
+                    "message": error_msg,
+                    "error": download_result,
+                    "output_directory": output_dir,
+                    "process_id": process_id,
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "processing_time": time.time() - start_time
+                })
+                return
+        
+        logger.info(f"Using video file at: {download_path}")
         
         # Extract frames using FFmpeg
         logger.info(f"Extracting frames with scene_threshold={scene_threshold}")
@@ -257,7 +277,8 @@ def process_video_task(
             "output_directory": output_dir,
             "processing_time": round(total_processing_time, 2),
             "extraction_time": extraction_result.get("processing_time", 0),
-            "download_time": round(extraction_result.get("processing_time", 0) - total_processing_time, 2)
+            "download_time": round(extraction_result.get("processing_time", 0) - total_processing_time, 2),
+            "file_already_existed": file_already_exists and not force_download
         }
         
         # Include scene metadata if available
@@ -280,7 +301,40 @@ def process_video_task(
         
         logger.info(f"Processing complete for file {file_name}. Sending callback with {len(frames_info)} frames.")
         # Send the final callback
-        send_callback(callback_url, callback_data)
+        callback_success = send_callback(callback_url, callback_data)
+        
+        # Only delete the file if delete_after_processing is True AND the callback was successful
+        if delete_after_processing and callback_success:
+            logger.info(f"Deleting video file after successful processing: {download_path}")
+            try:
+                os.remove(download_path)
+                logger.info(f"Successfully deleted video file: {download_path}")
+                
+                # Add deletion info to callback data for a follow-up confirmation
+                deletion_callback_data = {
+                    "success": True,
+                    "message": f"Video file deleted after successful processing",
+                    "process_id": process_id,
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "output_directory": output_dir,
+                    "file_deleted": True
+                }
+                # Send a follow-up callback to confirm deletion
+                send_callback(callback_url, deletion_callback_data)
+            except Exception as e:
+                logger.error(f"Failed to delete video file {download_path}: {str(e)}")
+                # Notify about deletion failure
+                send_callback(callback_url, {
+                    "success": True,
+                    "message": f"Processing successful but file deletion failed: {str(e)}",
+                    "process_id": process_id,
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "output_directory": output_dir,
+                    "file_deleted": False,
+                    "deletion_error": str(e)
+                })
         
     except Exception as e:
         logger.exception(f"Error in background processing: {str(e)}")

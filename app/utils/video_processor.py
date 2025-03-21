@@ -78,10 +78,23 @@ class VideoProcessor:
                 match = re.search(pattern, line)
                 if match:
                     frame_num, pts, pts_time = match.groups()
+                    frame_number = int(frame_num)
+                    timestamp = float(pts_time)
+                    
+                    # Format timestamp as HH:MM:SS:FF (where FF is frame in the second at 60fps)
+                    hours = int(timestamp // 3600)
+                    minutes = int((timestamp % 3600) // 60)
+                    seconds = int(timestamp % 60)
+                    # Calculate frame within second (assuming 60fps)
+                    frame_in_second = int((timestamp % 1) * 60) 
+                    
+                    formatted_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frame_in_second:02d}"
+                    
                     scene_data.append({
-                        "frame_number": int(frame_num),
+                        "frame_number": frame_number,
                         "pts": int(pts),
-                        "timestamp": float(pts_time)
+                        "timestamp": timestamp,
+                        "formatted_time": formatted_time
                     })
         
         return scene_data
