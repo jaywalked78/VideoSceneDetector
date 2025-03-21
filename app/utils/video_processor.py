@@ -100,15 +100,25 @@ class VideoProcessor:
         return scene_data
 
     @staticmethod
-    def extract_frames(video_path: str, output_dir: str, scene_threshold: float = 0.4) -> Tuple[bool, Dict]:
+    def extract_frames(video_path: str, output_dir: str, scene_threshold: float = 0.4, use_gpu: bool = False) -> Tuple[bool, Dict]:
         """
         Extract frames from video using FFmpeg and capture metadata
+        
+        Args:
+            video_path: Path to the video file
+            output_dir: Directory to save extracted frames
+            scene_threshold: Threshold for scene detection (0.0-1.0)
+            use_gpu: Whether to use NVIDIA GPU acceleration
+            
+        Returns:
+            Tuple of (success, result_dict)
         """
         try:
             start_time = time.time()
             logger.info(f"Starting frame extraction for video: {video_path}")
             logger.info(f"Output directory: {output_dir}")
             logger.info(f"Scene threshold: {scene_threshold}")
+            logger.info(f"GPU acceleration: {'Enabled' if use_gpu else 'Disabled'}")
             
             # Get video duration and metadata first
             logger.info("Getting video metadata with ffprobe")
@@ -140,12 +150,31 @@ class VideoProcessor:
             
             # Construct FFmpeg command for frame extraction
             output_pattern = os.path.join(output_dir, "frame_%06d.jpg")
-            cmd = [
-                "ffmpeg", "-i", video_path,
-                "-vf", f"select='gt(scene,{scene_threshold})',showinfo",
+            
+            # Base command
+            cmd = ["ffmpeg", "-i", video_path]
+            
+            # Add GPU acceleration if requested
+            if use_gpu:
+                logger.info("Using NVIDIA GPU acceleration via NVENC")
+                # Add hardware acceleration options
+                cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+                
+                # Use GPU-accelerated filter chain
+                cmd.extend([
+                    "-vf", f"select='gt(scene,{scene_threshold})',hwdownload,format=nv12,showinfo"
+                ])
+            else:
+                # Standard CPU-based processing
+                cmd.extend([
+                    "-vf", f"select='gt(scene,{scene_threshold})',showinfo"
+                ])
+            
+            # Common options for output
+            cmd.extend([
                 "-vsync", "0",
                 output_pattern
-            ]
+            ])
             
             # Run FFmpeg command
             logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
@@ -183,7 +212,8 @@ class VideoProcessor:
                     "stdout": process.stdout,
                     "stderr": process.stderr
                 },
-                "video_info": probe_result.stdout
+                "video_info": probe_result.stdout,
+                "gpu_accelerated": use_gpu
             }
             
             logger.info(f"Frame extraction complete: {len(frames)} frames extracted")

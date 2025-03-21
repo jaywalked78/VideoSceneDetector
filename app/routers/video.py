@@ -110,13 +110,14 @@ async def process_drive_video(request: GoogleDriveVideoProcessRequest, backgroun
     1. Create a safe directory for the video
     2. Check if file already exists locally, skip download if it does (unless force_download=True)
     3. Download the file from Google Drive directly to the directory if needed
-    4. Extract frames using FFmpeg
+    4. Extract frames using FFmpeg (with optional GPU acceleration)
     5. Send results to callback URL
     6. Optionally delete the video file after processing if delete_after_processing is true
     
     Returns immediately with a success status while processing continues in background.
     """
     logger.info(f"Processing video from Google Drive with file_id: {request.file_id}")
+    logger.info(f"GPU acceleration: {'Enabled' if request.use_gpu else 'Disabled'}")
     
     try:
         # Initialize services for validation
@@ -147,7 +148,8 @@ async def process_drive_video(request: GoogleDriveVideoProcessRequest, backgroun
             scene_threshold=request.scene_threshold,
             create_subfolder=request.create_subfolder,
             delete_after_processing=request.delete_after_processing,
-            force_download=request.force_download
+            force_download=request.force_download,
+            use_gpu=request.use_gpu
         )
         
         # Return immediate success response
@@ -172,7 +174,8 @@ def process_video_task(
     scene_threshold: float = 0.4,
     create_subfolder: bool = True,
     delete_after_processing: bool = False,
-    force_download: bool = False
+    force_download: bool = False,
+    use_gpu: bool = False
 ):
     """
     Background task to process video file and send callback when complete.
@@ -231,11 +234,12 @@ def process_video_task(
         logger.info(f"Using video file at: {download_path}")
         
         # Extract frames using FFmpeg
-        logger.info(f"Extracting frames with scene_threshold={scene_threshold}")
+        logger.info(f"Extracting frames with scene_threshold={scene_threshold}, use_gpu={use_gpu}")
         success, extraction_result = processor.extract_frames(
             download_path,
             output_dir,
-            scene_threshold=scene_threshold
+            scene_threshold=scene_threshold,
+            use_gpu=use_gpu
         )
         
         if not success:
