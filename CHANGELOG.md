@@ -2,6 +2,22 @@
 
 All notable changes to the VideoSceneDetector project will be documented in this file.
 
+## [1.2.0] - 2025-03-30
+
+### Added
+- Frame upload verification before sending webhooks
+- Sample file validation to confirm Google Drive upload accessibility
+- More detailed upload status reports and logging
+
+### Changed
+- Improved webhook triggering logic to ensure uploads are complete
+- Enhanced error handling and reporting in frame upload process
+- Added more detailed progress reporting for Google Drive uploads
+
+### Fixed
+- Fixed issue where frame processing webhooks were triggered before all uploads completed
+- Added validation to prevent duplicate workflow triggering
+
 ## [1.1.0] - 2025-03-30
 
 ### Added

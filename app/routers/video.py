@@ -303,6 +303,27 @@ def process_video_task(
                 logger.info(f"Drive URL: {drive_upload_result.get('drive_folder_url')}")
                 logger.info(f"Frames uploaded: {drive_upload_result.get('frames_uploaded')}/{drive_upload_result.get('total_frames')}")
                 logger.info(f"Upload time: {drive_upload_result.get('upload_time')} seconds")
+                
+                # Verify upload completeness before proceeding with webhooks
+                frames_uploaded = drive_upload_result.get('frames_uploaded', 0)
+                total_frames = drive_upload_result.get('total_frames', 0)
+                failed_uploads = drive_upload_result.get('frames_failed', 0)
+                
+                if frames_uploaded < (total_frames - failed_uploads):
+                    logger.warning(f"===== UPLOAD VERIFICATION FAILED =====")
+                    logger.warning(f"Not all frames were uploaded successfully: {frames_uploaded}/{total_frames}")
+                    logger.warning("Setting upload_success to False to prevent premature webhook triggering")
+                    upload_success = False
+                    
+                    # Update drive_upload_result with verification status
+                    drive_upload_result["success"] = False
+                    drive_upload_result["warning"] = f"Upload verification failed: {frames_uploaded}/{total_frames} frames uploaded"
+                else:
+                    logger.info(f"===== UPLOAD VERIFICATION SUCCESSFUL =====")
+                    logger.info(f"All required frames were uploaded successfully: {frames_uploaded}/{total_frames}")
+                    
+                    # Ensure drive_upload_result has success flag
+                    drive_upload_result["success"] = True
             else:
                 logger.error(f"===== GOOGLE DRIVE UPLOAD FAILED =====")
                 logger.error(f"Failed to upload frames to Google Drive: {drive_upload_result.get('error', 'Unknown error')}")
@@ -396,13 +417,22 @@ def process_video_task(
         logger.info(f"Wait complete. Proceeding to send frame processor webhook.")
         
         # STEP 3: Only send the frame processor webhook if Google Drive upload was successful
-        if drive_upload_result and drive_upload_result.get('success', False):
+        upload_verification_passed = (
+            drive_upload_result and 
+            drive_upload_result.get('success', False) and 
+            drive_upload_result.get('frames_uploaded', 0) > 0 and 
+            drive_upload_result.get('frames_uploaded', 0) >= (drive_upload_result.get('total_frames', 0) - drive_upload_result.get('frames_failed', 0))
+        )
+        
+        if upload_verification_passed:
             # Send additional webhook notification for successful frame uploads
             frame_processor_url = os.environ.get("FRAME_PROCESSOR_WEBHOOK_URL", "http://localhost:5678/webhook/c9af1341-63b6-43fa-a5fc-c7fefc6ab732")
             drive_success_webhook_url = frame_processor_url
             drive_webhook_data = {
                 "folder_name": drive_upload_result.get('folder_name'),
                 "frame_count": len(frames_info),
+                "frames_uploaded": drive_upload_result.get('frames_uploaded'),
+                "total_frames": drive_upload_result.get('total_frames'),
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "folder_id": drive_upload_result.get('folder_id'),
                 "drive_folder_url": drive_upload_result.get('drive_folder_url'),
@@ -419,7 +449,13 @@ def process_video_task(
             else:
                 logger.error(f"Failed to send frame processor webhook!")
         else:
-            logger.warning("Skipping frame processor webhook - Google Drive upload was not successful")
+            logger.warning("===== SKIPPING FRAME PROCESSOR WEBHOOK =====")
+            if not drive_upload_result:
+                logger.warning("Reason: No drive upload result available")
+            elif not drive_upload_result.get('success', False):
+                logger.warning(f"Reason: Drive upload was not successful - {drive_upload_result.get('error', drive_upload_result.get('warning', 'Unknown error'))}")
+            else:
+                logger.warning(f"Reason: Upload verification failed - {drive_upload_result.get('frames_uploaded', 0)}/{drive_upload_result.get('total_frames', 0)} frames uploaded")
         
         # STEP 4: Send callback to original callback URL if provided
         if callback_url and callback_url != frame_analysis_url and callback_url != drive_success_webhook_url:

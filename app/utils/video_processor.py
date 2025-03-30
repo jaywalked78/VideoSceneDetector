@@ -373,9 +373,37 @@ class VideoProcessor:
             
             upload_time = time.time() - start_time
             
+            # Determine overall success based on uploaded count vs total count
+            overall_success = uploaded_count > 0 and uploaded_count >= (len(frames) - failed_count)
+            
+            # If we've uploaded frames, verify a sample is accessible
+            if uploaded_count > 0:
+                logger.info(f"Validating uploaded frames by checking file access...")
+                try:
+                    # Check if the first uploaded frame is accessible
+                    validation_query = f"'{folder_id}' in parents and mimeType contains 'image/'"
+                    file_check = drive_service.files().list(
+                        q=validation_query,
+                        pageSize=1,
+                        fields="files(id, name)"
+                    ).execute()
+                    
+                    files_found = file_check.get('files', [])
+                    if files_found:
+                        logger.info(f"Frame validation successful! Found {len(files_found)} sample frame(s).")
+                        first_file = files_found[0]
+                        logger.info(f"Sample frame: {first_file.get('name')} (ID: {first_file.get('id')})")
+                    else:
+                        logger.warning("Frame validation warning: No frames found in the created folder.")
+                        logger.warning("This might indicate permissions or processing delay issues.")
+                        # Don't fail if we uploaded files but can't see them yet - might be processing delay
+                except Exception as e:
+                    logger.warning(f"Frame validation error: {str(e)}")
+                    logger.warning("Continuing with upload result as-is despite validation error")
+            
             # Create result dictionary
             result = {
-                "success": True,
+                "success": overall_success,
                 "folder_name": safe_foldername,
                 "folder_id": folder_id,
                 "frames_uploaded": uploaded_count,
@@ -384,6 +412,10 @@ class VideoProcessor:
                 "upload_time": round(upload_time, 2),
                 "drive_folder_url": f"https://drive.google.com/drive/folders/{folder_id}"
             }
+            
+            # Add warning if not all frames were uploaded successfully
+            if not overall_success and uploaded_count > 0:
+                result["warning"] = f"Not all frames were uploaded successfully ({uploaded_count}/{len(frames)})"
             
             logger.info(f"===== GOOGLE DRIVE UPLOAD SUMMARY =====")
             logger.info(f"Frame upload to Google Drive complete:")
@@ -394,9 +426,10 @@ class VideoProcessor:
             logger.info(f"- Folder name: {safe_foldername}")
             logger.info(f"- Folder ID: {folder_id}")
             logger.info(f"- Drive URL: https://drive.google.com/drive/folders/{folder_id}")
+            logger.info(f"- Overall success: {overall_success}")
             logger.info(f"===== END OF UPLOAD SUMMARY =====")
             
-            return True, result
+            return overall_success, result
             
         except Exception as e:
             logger.error(f"===== GOOGLE DRIVE UPLOAD ERROR =====")
