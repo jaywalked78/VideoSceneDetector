@@ -90,7 +90,7 @@ class VideoProcessor:
                 match = re.search(pattern, line)
                 if match:
                     frame_num, pts, pts_time = match.groups()
-                    frame_number = int(frame_num)
+                    frame_number = int(frame_num) + 1  # Add 1 to convert from 0-based to 1-based indexing
                     timestamp = float(pts_time)
                     
                     # Format timestamp as HH:MM:SS:FF (where FF is frame in the second at 60fps)

@@ -2,6 +2,11 @@
 
 All notable changes to the VideoSceneDetector project will be documented in this file.
 
+## [1.2.1] - 2025-03-30
+
+### Fixed
+- Fixed frame numbering in metadata to use 1-based indexing instead of 0-based indexing
+
 ## [1.2.0] - 2025-03-30
 
 ### Added
