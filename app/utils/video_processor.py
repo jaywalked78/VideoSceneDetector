@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 from slugify import slugify
 import requests
+import mimetypes
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+import pickle
+import io
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -215,4 +223,224 @@ class VideoProcessor:
             return True
         except Exception as e:
             logger.error(f"Error sending callback: {str(e)}")
-            return False 
+            return False
+
+    @staticmethod
+    def upload_frames_to_drive(output_dir: str, original_filename: str, token_path: str = None) -> Tuple[bool, Dict]:
+        """
+        Upload extracted frames to Google Drive
+        
+        Args:
+            output_dir: Directory containing the extracted frames
+            original_filename: Original filename of the video
+            token_path: Path to the Google Drive authentication token (optional)
+            
+        Returns:
+            Tuple of (success, result_dict)
+        """
+        try:
+            start_time = time.time()
+            logger.info(f"===== DRIVE UPLOAD DETAILS =====")
+            logger.info(f"Starting Google Drive upload for frames in: {output_dir}")
+            logger.info(f"Original filename: {original_filename}")
+            
+            # Set token path - use environment variable or default
+            if not token_path:
+                token_path = os.getenv("GOOGLE_TOKEN", "token.pickle")
+                logger.info(f"Using token path from environment: {token_path}")
+            
+            # Ensure we're using absolute path if token_path is relative
+            if not os.path.isabs(token_path):
+                # Get the directory of the current script
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                token_path = os.path.join(base_dir, token_path)
+                logger.info(f"Using absolute token path: {token_path}")
+            
+            # Format folder name from original filename
+            safe_foldername = slugify(Path(original_filename).stem, separator="_")
+            logger.info(f"Target folder name: {safe_foldername}")
+            
+            # Target parent folder ID for "ScreenRecorded Frames"
+            parent_folder_id = "1ogD8Ca0a0kfV5tx_eMYtBS856ICn9qtp"
+            logger.info(f"Parent folder ID: {parent_folder_id}")
+            
+            # Get frames to upload
+            frames = [f for f in os.listdir(output_dir) if f.startswith("frame_") and f.endswith(".jpg")]
+            logger.info(f"Found {len(frames)} frames to upload")
+            
+            if not frames:
+                logger.warning(f"No frames found in {output_dir}")
+                return False, {
+                    "error": "No frames to upload",
+                    "details": f"Directory {output_dir} contains no frame files"
+                }
+            
+            # Authenticate with Google Drive
+            creds = None
+            
+            # Check if token exists
+            if os.path.exists(token_path):
+                logger.info(f"Token file exists at {token_path}")
+                try:
+                    with open(token_path, 'rb') as token:
+                        creds = pickle.load(token)
+                    logger.info(f"Successfully loaded OAuth credentials from token file")
+                    logger.info(f"Credentials type: {type(creds).__name__}")
+                except Exception as e:
+                    logger.error(f"Error loading token file {token_path}: {str(e)}")
+                    return False, {
+                        "error": "Authentication failed",
+                        "details": f"Error loading token file: {str(e)}"
+                    }
+            else:
+                logger.error(f"Token file not found at {token_path}")
+                return False, {
+                    "error": "Authentication failed", 
+                    "details": f"Token file not found at {token_path}"
+                }
+            
+            # If no valid credentials are available, return error
+            if not creds or not creds.valid:
+                logger.info(f"Credentials valid: {creds and creds.valid}")
+                if creds and creds.expired and creds.refresh_token:
+                    logger.info("Attempting to refresh expired credentials")
+                    try:
+                        creds.refresh(Request())
+                        logger.info("Successfully refreshed OAuth credentials")
+                    except Exception as e:
+                        logger.error(f"Failed to refresh credentials: {str(e)}")
+                        return False, {
+                            "error": "Authentication failed",
+                            "details": f"Failed to refresh expired credentials: {str(e)}"
+                        }
+                else:
+                    logger.error("No valid Google Drive credentials available")
+                    return False, {
+                        "error": "Authentication failed",
+                        "details": "No valid Google Drive credentials"
+                    }
+            
+            # Build the Drive API client
+            logger.info("Building Google Drive API client")
+            drive_service = build('drive', 'v3', credentials=creds)
+            
+            # Step 1: Create a folder in the parent folder
+            folder_metadata = {
+                'name': safe_foldername,
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [parent_folder_id]
+            }
+            
+            logger.info(f"Creating folder in Google Drive: {safe_foldername}")
+            logger.info(f"Folder metadata: {json.dumps(folder_metadata)}")
+            folder = drive_service.files().create(
+                body=folder_metadata,
+                fields='id'
+            ).execute()
+            
+            folder_id = folder.get('id')
+            logger.info(f"Created folder with ID: {folder_id}")
+            logger.info(f"Google Drive folder URL: https://drive.google.com/drive/folders/{folder_id}")
+            
+            # Step 2: Upload each frame to the new folder
+            uploaded_count = 0
+            failed_count = 0
+            
+            logger.info(f"===== STARTING FRAME UPLOADS =====")
+            logger.info(f"Uploading {len(frames)} frames to Google Drive folder: {folder_id}")
+            
+            # Log the first few frames to be uploaded
+            if len(frames) > 0:
+                sample_frames = frames[:min(5, len(frames))]
+                logger.info(f"Sample frames to upload: {', '.join(sample_frames)}")
+            
+            upload_start_time = time.time()
+            for frame_index, frame in enumerate(frames):
+                frame_path = os.path.join(output_dir, frame)
+                
+                # Prepare metadata for the file
+                file_metadata = {
+                    'name': frame,
+                    'parents': [folder_id]
+                }
+                
+                # Determine MIME type
+                mime_type = mimetypes.guess_type(frame_path)[0]
+                if not mime_type:
+                    mime_type = 'image/jpeg'  # Default for frames
+                
+                # Create media upload object
+                media = MediaFileUpload(
+                    frame_path,
+                    mimetype=mime_type,
+                    resumable=True
+                )
+                
+                try:
+                    # Upload the file
+                    file = drive_service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields='id'
+                    ).execute()
+                    
+                    uploaded_count += 1
+                    
+                    # Log progress more frequently for smaller uploads
+                    log_interval = max(1, len(frames) // 20)  # Log at least 20 times during the upload
+                    if uploaded_count % log_interval == 0 or uploaded_count == len(frames):
+                        current_time = time.time()
+                        elapsed = current_time - upload_start_time
+                        frames_per_second = uploaded_count / max(0.1, elapsed)
+                        estimated_remaining = (len(frames) - uploaded_count) / max(0.1, frames_per_second)
+                        
+                        logger.info(f"Uploaded {uploaded_count}/{len(frames)} frames ({(uploaded_count/len(frames)*100):.1f}%) - {frames_per_second:.1f} frames/sec, ~{estimated_remaining:.1f} sec remaining")
+                        
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"Error uploading frame {frame}: {str(e)}")
+                    # For the first few failures, log more details
+                    if failed_count <= 3:
+                        logger.error(f"Frame path: {frame_path}")
+                        logger.error(f"Error type: {type(e).__name__}")
+            
+            upload_time = time.time() - start_time
+            
+            # Create result dictionary
+            result = {
+                "success": True,
+                "folder_name": safe_foldername,
+                "folder_id": folder_id,
+                "frames_uploaded": uploaded_count,
+                "frames_failed": failed_count,
+                "total_frames": len(frames),
+                "upload_time": round(upload_time, 2),
+                "drive_folder_url": f"https://drive.google.com/drive/folders/{folder_id}"
+            }
+            
+            logger.info(f"===== GOOGLE DRIVE UPLOAD SUMMARY =====")
+            logger.info(f"Frame upload to Google Drive complete:")
+            logger.info(f"- Frames uploaded: {uploaded_count}/{len(frames)} ({uploaded_count/len(frames)*100:.1f}%)")
+            if failed_count > 0:
+                logger.warning(f"- Failed uploads: {failed_count}")
+            logger.info(f"- Upload time: {upload_time:.2f} seconds ({len(frames)/upload_time:.1f} frames/sec)")
+            logger.info(f"- Folder name: {safe_foldername}")
+            logger.info(f"- Folder ID: {folder_id}")
+            logger.info(f"- Drive URL: https://drive.google.com/drive/folders/{folder_id}")
+            logger.info(f"===== END OF UPLOAD SUMMARY =====")
+            
+            return True, result
+            
+        except Exception as e:
+            logger.error(f"===== GOOGLE DRIVE UPLOAD ERROR =====")
+            logger.error(f"Error uploading frames to Google Drive: {str(e)}")
+            logger.error(f"Error type: {type(e).__name__}")
+            
+            # Get traceback for more detailed debugging
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            return False, {
+                "error": "Google Drive upload failed",
+                "details": str(e)
+            } 

@@ -59,14 +59,14 @@ class GoogleDriveService:
                         if self._is_service_account(credentials_path):
                             creds = service_account.Credentials.from_service_account_file(
                                 credentials_path, 
-                                scopes=['https://www.googleapis.com/auth/drive.readonly']
+                                scopes=['https://www.googleapis.com/auth/drive']
                             )
                             logger.info("Using service account authentication")
                         else:
                             # Then try OAuth flow
                             flow = InstalledAppFlow.from_client_secrets_file(
                                 credentials_path,
-                                ['https://www.googleapis.com/auth/drive.readonly']
+                                ['https://www.googleapis.com/auth/drive']
                             )
                             creds = flow.run_local_server(port=0)
                             logger.info("Completed OAuth authentication flow")

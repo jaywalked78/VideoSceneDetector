@@ -40,14 +40,13 @@ def authenticate_drive():
             creds.refresh(Request())
             print("Refreshed existing OAuth credentials")
         else:
-            # Run the OAuth flow with a fixed port (8080)
-            # IMPORTANT: This port must be registered in Google Cloud Console
+            # Run the OAuth flow with automatic port selection
+            # This allows Google to use the default redirect URI pattern
             flow = InstalledAppFlow.from_client_secrets_file(
                 credentials_path,
-                ['https://www.googleapis.com/auth/drive.readonly'],
-                redirect_uri='http://localhost:8080'
+                ['https://www.googleapis.com/auth/drive']
             )
-            creds = flow.run_local_server(port=8080)
+            creds = flow.run_local_server()
             print("Successfully authenticated with Google Drive")
         
         # Save the credentials for the next run

@@ -278,6 +278,28 @@ def process_video_task(
                 "size_bytes": frame_path.stat().st_size
             })
         
+        # Upload frames to Google Drive if we have frames
+        drive_upload_result = None
+        if frames_info:
+            logger.info(f"===== STARTING GOOGLE DRIVE UPLOAD =====")
+            logger.info(f"Uploading {len(frames_info)} frames to Google Drive from {output_dir}")
+            upload_success, drive_upload_result = VideoProcessor.upload_frames_to_drive(
+                output_dir=output_dir,
+                original_filename=file_name
+            )
+            if upload_success:
+                logger.info(f"===== GOOGLE DRIVE UPLOAD SUCCESS =====")
+                logger.info(f"Successfully uploaded frames to Google Drive: {drive_upload_result.get('folder_name')}")
+                logger.info(f"Folder ID: {drive_upload_result.get('folder_id')}")
+                logger.info(f"Drive URL: {drive_upload_result.get('drive_folder_url')}")
+                logger.info(f"Frames uploaded: {drive_upload_result.get('frames_uploaded')}/{drive_upload_result.get('total_frames')}")
+                logger.info(f"Upload time: {drive_upload_result.get('upload_time')} seconds")
+            else:
+                logger.error(f"===== GOOGLE DRIVE UPLOAD FAILED =====")
+                logger.error(f"Failed to upload frames to Google Drive: {drive_upload_result.get('error', 'Unknown error')}")
+                if 'details' in drive_upload_result:
+                    logger.error(f"Error details: {drive_upload_result.get('details')}")
+        
         # Prepare final callback data with complete metadata
         total_processing_time = time.time() - start_time
         callback_data = {
@@ -298,6 +320,10 @@ def process_video_task(
         # Include scene metadata if available
         if "scene_metadata" in extraction_result:
             callback_data['scene_metadata'] = extraction_result["scene_metadata"]
+        
+        # Include Google Drive upload results if available
+        if drive_upload_result:
+            callback_data['drive_upload'] = drive_upload_result
         
         # Include video info if available
         if "video_info" in extraction_result:
@@ -333,10 +359,62 @@ def process_video_task(
         if deletion_error:
             callback_data["deletion_error"] = deletion_error
         
-        logger.info(f"Processing complete for file {file_name}. Sending callback with {len(frames_info)} frames.")
-        # Send a single callback with all information
-        send_callback(callback_url, callback_data)
+        # STEP 1: Send the comprehensive data webhook (for Airtable)
+        logger.info(f"Processing complete for file {file_name}. Sending data to Airtable.")
+        airtable_webhook_url = "http://localhost:5678/webhook/9268d2b1-e4de-421e-9685-4c5aa5e79289"
+        logger.info(f"===== SENDING AIRTABLE DATA WEBHOOK =====")
+        logger.info(f"Sending comprehensive data to Airtable webhook: {airtable_webhook_url}")
+        
+        # Include additional fields needed for Airtable
+        airtable_callback_data = {**callback_data}
+        airtable_callback_data["webhookUrl"] = airtable_webhook_url
+        airtable_callback_data["executionMode"] = "production"
+        
+        # Send webhook to Airtable
+        airtable_result = send_callback(airtable_webhook_url, airtable_callback_data)
+        if airtable_result:
+            logger.info(f"Airtable webhook sent successfully!")
+        else:
+            logger.error(f"Failed to send Airtable webhook!")
+        
+        # Set webhook_sent for error handling
         webhook_sent = True
+        
+        # STEP 2: Wait for 1 minute to allow Airtable to process the data
+        logger.info(f"===== WAITING 60 SECONDS BEFORE SENDING FRAME PROCESSOR WEBHOOK =====")
+        logger.info(f"Waiting 60 seconds to allow Airtable to process the data...")
+        time.sleep(60)
+        logger.info(f"Wait complete. Proceeding to send frame processor webhook.")
+        
+        # STEP 3: Only send the frame processor webhook if Google Drive upload was successful
+        if drive_upload_result and drive_upload_result.get('success', False):
+            # Send additional webhook notification for successful frame uploads
+            drive_success_webhook_url = "http://localhost:5678/webhook/c9af1341-63b6-43fa-a5fc-c7fefc6ab732"
+            drive_webhook_data = {
+                "folder_name": drive_upload_result.get('folder_name'),
+                "frame_count": len(frames_info),
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "folder_id": drive_upload_result.get('folder_id'),
+                "drive_folder_url": drive_upload_result.get('drive_folder_url'),
+                "process_id": process_id,
+                "success": True
+            }
+            
+            logger.info(f"===== SENDING FRAME PROCESSOR WEBHOOK =====")
+            logger.info(f"Sending Google Drive upload success webhook to: {drive_success_webhook_url}")
+            logger.info(f"Webhook payload: {json.dumps(drive_webhook_data, indent=2)}")
+            webhook_result = send_callback(drive_success_webhook_url, drive_webhook_data)
+            if webhook_result:
+                logger.info(f"Frame processor webhook sent successfully!")
+            else:
+                logger.error(f"Failed to send frame processor webhook!")
+        else:
+            logger.warning("Skipping frame processor webhook - Google Drive upload was not successful")
+        
+        # STEP 4: Send callback to original callback URL if provided
+        if callback_url and callback_url != airtable_webhook_url and callback_url != drive_success_webhook_url:
+            logger.info(f"Sending callback to original callback URL: {callback_url}")
+            send_callback(callback_url, callback_data)
         
     except Exception as e:
         logger.exception(f"Error in background processing: {str(e)}")
@@ -364,13 +442,23 @@ def send_callback(callback_url: str, data: dict) -> bool:
         return False
     
     # Check for process_id to deduplicate webhooks
+    # Skip deduplication for Airtable and frame processor webhooks
+    is_airtable_webhook = "9268d2b1-e4de-421e-9685-4c5aa5e79289" in callback_url
+    is_frame_processor_webhook = "c9af1341-63b6-43fa-a5fc-c7fefc6ab732" in callback_url
+    
     process_id = data.get("process_id")
-    if process_id and process_id in webhook_sent_tracker:
+    if process_id and process_id in webhook_sent_tracker and not is_airtable_webhook and not is_frame_processor_webhook:
         logger.info(f"Webhook already sent for process {process_id}, skipping duplicate")
         return True
         
     logger.info(f"Sending callback to: {callback_url}")
+    
+    # Debugging: log a subset of the payload (without large fields like frames_info)
+    debug_data = {k: v for k, v in data.items() if k not in ['frames_info', 'scene_metadata', 'ffmpeg_output']}
+    logger.info(f"Callback payload summary: {json.dumps(debug_data, indent=2)}")
+    
     try:
+        logger.info(f"Starting HTTP POST request to {callback_url}")
         response = requests.post(
             callback_url,
             json=data,
@@ -380,17 +468,22 @@ def send_callback(callback_url: str, data: dict) -> bool:
         
         if response.status_code >= 200 and response.status_code < 300:
             logger.info(f"Callback sent successfully. Status: {response.status_code}")
+            logger.info(f"Response body: {response.text[:200]}" + ("..." if len(response.text) > 200 else ""))
             # Track that we've sent a webhook for this process
-            if process_id:
+            if process_id and not is_airtable_webhook and not is_frame_processor_webhook:
                 webhook_sent_tracker[process_id] = True
             return True
         else:
             logger.warning(f"Callback received non-success response: {response.status_code}")
             logger.warning(f"Response: {response.text[:500]}")
+            logger.warning(f"Request URL: {callback_url}")
+            logger.warning(f"Request headers: {{'Content-Type': 'application/json'}}")
             return False
             
     except Exception as e:
         logger.error(f"Failed to send callback: {str(e)}")
+        logger.error(f"Callback URL: {callback_url}")
+        logger.error(f"Error type: {type(e).__name__}")
         return False
 
 @router.get("/health", response_model=HealthResponse)
