@@ -16,6 +16,10 @@ from google.auth.transport.requests import Request
 import pickle
 import io
 import json
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -244,18 +248,6 @@ class VideoProcessor:
             logger.info(f"Starting Google Drive upload for frames in: {output_dir}")
             logger.info(f"Original filename: {original_filename}")
             
-            # Set token path - use environment variable or default
-            if not token_path:
-                token_path = os.getenv("GOOGLE_TOKEN", "token.pickle")
-                logger.info(f"Using token path from environment: {token_path}")
-            
-            # Ensure we're using absolute path if token_path is relative
-            if not os.path.isabs(token_path):
-                # Get the directory of the current script
-                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                token_path = os.path.join(base_dir, token_path)
-                logger.info(f"Using absolute token path: {token_path}")
-            
             # Format folder name from original filename
             safe_foldername = slugify(Path(original_filename).stem, separator="_")
             logger.info(f"Target folder name: {safe_foldername}")
@@ -275,54 +267,29 @@ class VideoProcessor:
                     "details": f"Directory {output_dir} contains no frame files"
                 }
             
-            # Authenticate with Google Drive
-            creds = None
-            
-            # Check if token exists
-            if os.path.exists(token_path):
-                logger.info(f"Token file exists at {token_path}")
-                try:
-                    with open(token_path, 'rb') as token:
-                        creds = pickle.load(token)
-                    logger.info(f"Successfully loaded OAuth credentials from token file")
-                    logger.info(f"Credentials type: {type(creds).__name__}")
-                except Exception as e:
-                    logger.error(f"Error loading token file {token_path}: {str(e)}")
+            # Use the GoogleDriveService class for authentication
+            try:
+                from app.utils.google_drive import GoogleDriveService
+                logger.info("Using GoogleDriveService for authentication")
+                
+                # Initialize the Google Drive service
+                drive_service_handler = GoogleDriveService()
+                drive_service = drive_service_handler.drive_service
+                
+                if not drive_service:
+                    logger.error("Failed to initialize Google Drive service")
                     return False, {
                         "error": "Authentication failed",
-                        "details": f"Error loading token file: {str(e)}"
+                        "details": "Failed to initialize Google Drive service"
                     }
-            else:
-                logger.error(f"Token file not found at {token_path}")
+                
+                logger.info("Successfully initialized Google Drive service")
+            except Exception as e:
+                logger.error(f"Error initializing GoogleDriveService: {str(e)}")
                 return False, {
-                    "error": "Authentication failed", 
-                    "details": f"Token file not found at {token_path}"
+                    "error": "Authentication failed",
+                    "details": f"Error initializing GoogleDriveService: {str(e)}"
                 }
-            
-            # If no valid credentials are available, return error
-            if not creds or not creds.valid:
-                logger.info(f"Credentials valid: {creds and creds.valid}")
-                if creds and creds.expired and creds.refresh_token:
-                    logger.info("Attempting to refresh expired credentials")
-                    try:
-                        creds.refresh(Request())
-                        logger.info("Successfully refreshed OAuth credentials")
-                    except Exception as e:
-                        logger.error(f"Failed to refresh credentials: {str(e)}")
-                        return False, {
-                            "error": "Authentication failed",
-                            "details": f"Failed to refresh expired credentials: {str(e)}"
-                        }
-                else:
-                    logger.error("No valid Google Drive credentials available")
-                    return False, {
-                        "error": "Authentication failed",
-                        "details": "No valid Google Drive credentials"
-                    }
-            
-            # Build the Drive API client
-            logger.info("Building Google Drive API client")
-            drive_service = build('drive', 'v3', credentials=creds)
             
             # Step 1: Create a folder in the parent folder
             folder_metadata = {

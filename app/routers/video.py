@@ -9,6 +9,15 @@ import time
 import glob
 from pathlib import Path
 import requests
+from dotenv import load_dotenv
+import uuid
+import asyncio
+from datetime import datetime
+from typing import Optional, Dict, List, Any, Union
+import shutil
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -361,17 +370,17 @@ def process_video_task(
         
         # STEP 1: Send the comprehensive data webhook (for Airtable)
         logger.info(f"Processing complete for file {file_name}. Sending data to Airtable.")
-        airtable_webhook_url = "http://localhost:5678/webhook/9268d2b1-e4de-421e-9685-4c5aa5e79289"
+        frame_analysis_url = os.environ.get("FRAME_ANALYSIS_WEBHOOK_URL", "http://localhost:5678/webhook/9268d2b1-e4de-421e-9685-4c5aa5e79289")
         logger.info(f"===== SENDING AIRTABLE DATA WEBHOOK =====")
-        logger.info(f"Sending comprehensive data to Airtable webhook: {airtable_webhook_url}")
+        logger.info(f"Sending comprehensive data to Airtable webhook: {frame_analysis_url}")
         
         # Include additional fields needed for Airtable
         airtable_callback_data = {**callback_data}
-        airtable_callback_data["webhookUrl"] = airtable_webhook_url
+        airtable_callback_data["webhookUrl"] = frame_analysis_url
         airtable_callback_data["executionMode"] = "production"
         
         # Send webhook to Airtable
-        airtable_result = send_callback(airtable_webhook_url, airtable_callback_data)
+        airtable_result = send_callback(frame_analysis_url, airtable_callback_data)
         if airtable_result:
             logger.info(f"Airtable webhook sent successfully!")
         else:
@@ -389,7 +398,8 @@ def process_video_task(
         # STEP 3: Only send the frame processor webhook if Google Drive upload was successful
         if drive_upload_result and drive_upload_result.get('success', False):
             # Send additional webhook notification for successful frame uploads
-            drive_success_webhook_url = "http://localhost:5678/webhook/c9af1341-63b6-43fa-a5fc-c7fefc6ab732"
+            frame_processor_url = os.environ.get("FRAME_PROCESSOR_WEBHOOK_URL", "http://localhost:5678/webhook/c9af1341-63b6-43fa-a5fc-c7fefc6ab732")
+            drive_success_webhook_url = frame_processor_url
             drive_webhook_data = {
                 "folder_name": drive_upload_result.get('folder_name'),
                 "frame_count": len(frames_info),
@@ -412,7 +422,7 @@ def process_video_task(
             logger.warning("Skipping frame processor webhook - Google Drive upload was not successful")
         
         # STEP 4: Send callback to original callback URL if provided
-        if callback_url and callback_url != airtable_webhook_url and callback_url != drive_success_webhook_url:
+        if callback_url and callback_url != frame_analysis_url and callback_url != drive_success_webhook_url:
             logger.info(f"Sending callback to original callback URL: {callback_url}")
             send_callback(callback_url, callback_data)
         
@@ -443,8 +453,11 @@ def send_callback(callback_url: str, data: dict) -> bool:
     
     # Check for process_id to deduplicate webhooks
     # Skip deduplication for Airtable and frame processor webhooks
-    is_airtable_webhook = "9268d2b1-e4de-421e-9685-4c5aa5e79289" in callback_url
-    is_frame_processor_webhook = "c9af1341-63b6-43fa-a5fc-c7fefc6ab732" in callback_url
+    frame_analysis_url = os.environ.get("FRAME_ANALYSIS_WEBHOOK_URL", "http://localhost:5678/webhook/9268d2b1-e4de-421e-9685-4c5aa5e79289")
+    frame_processor_url = os.environ.get("FRAME_PROCESSOR_WEBHOOK_URL", "http://localhost:5678/webhook/c9af1341-63b6-43fa-a5fc-c7fefc6ab732")
+    
+    is_airtable_webhook = frame_analysis_url and frame_analysis_url in callback_url
+    is_frame_processor_webhook = frame_processor_url and frame_processor_url in callback_url
     
     process_id = data.get("process_id")
     if process_id and process_id in webhook_sent_tracker and not is_airtable_webhook and not is_frame_processor_webhook:

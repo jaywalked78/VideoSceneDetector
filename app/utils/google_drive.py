@@ -12,6 +12,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from typing import Optional, Tuple, Dict, List, Any
 from fastapi import HTTPException, BackgroundTasks
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +33,14 @@ class GoogleDriveService:
         """
         self.drive_service = None
         
+        # First check if service account is enabled and file is specified
+        use_service_account = os.getenv("GOOGLE_DRIVE_USE_SERVICE_ACCOUNT", "").lower() == "true"
+        service_account_file = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE", "")
+        
+        # Expand home directory if needed
+        if service_account_file and '~' in service_account_file:
+            service_account_file = os.path.expanduser(service_account_file)
+        
         # Try to get credentials path from environment if not provided
         if not credentials_path:
             credentials_path = os.getenv("GOOGLE_CREDENTIALS", "credentials.json")
@@ -39,55 +51,71 @@ class GoogleDriveService:
         
         try:
             creds = None
-            # Check if we have a token file
-            if os.path.exists(token_path):
-                with open(token_path, 'rb') as token:
-                    try:
-                        creds = pickle.load(token)
-                        logger.info("Loaded OAuth credentials from token file")
-                    except Exception as e:
-                        logger.warning(f"Error loading token file: {str(e)}")
             
-            # If there are no valid credentials, try to authenticate
-            if not creds or not creds.valid:
-                if creds and creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                    logger.info("Refreshed OAuth credentials")
-                elif os.path.exists(credentials_path):
-                    try:
-                        # First try service account authentication
-                        if self._is_service_account(credentials_path):
-                            creds = service_account.Credentials.from_service_account_file(
-                                credentials_path, 
-                                scopes=['https://www.googleapis.com/auth/drive']
-                            )
-                            logger.info("Using service account authentication")
-                        else:
-                            # Then try OAuth flow
-                            flow = InstalledAppFlow.from_client_secrets_file(
-                                credentials_path,
-                                ['https://www.googleapis.com/auth/drive']
-                            )
-                            creds = flow.run_local_server(port=0)
-                            logger.info("Completed OAuth authentication flow")
-                            
-                            # Save the credentials for the next run
-                            with open(token_path, 'wb') as token:
-                                pickle.dump(creds, token)
-                                logger.info(f"Saved OAuth token to {token_path}")
-                    except Exception as e:
-                        logger.error(f"Error during authentication: {str(e)}")
-                        raise
-                else:
-                    logger.warning(f"Credentials file not found at {credentials_path}")
-                    # Try application default credentials as a last resort
-                    try:
-                        self.drive_service = build('drive', 'v3', credentials=None)
-                        logger.info("Using application default credentials")
-                        return
-                    except Exception as e:
-                        logger.error(f"Failed to use application default credentials: {str(e)}")
-                        raise
+            # First try to use service account if enabled
+            if use_service_account and service_account_file and os.path.exists(service_account_file):
+                try:
+                    logger.info(f"Using service account file from: {service_account_file}")
+                    creds = service_account.Credentials.from_service_account_file(
+                        service_account_file, 
+                        scopes=['https://www.googleapis.com/auth/drive']
+                    )
+                    logger.info("Successfully loaded service account credentials")
+                except Exception as e:
+                    logger.error(f"Failed to use service account file: {str(e)}")
+                    logger.info("Falling back to OAuth authentication")
+            
+            # If no service account credentials, try OAuth flow
+            if not creds:
+                # Check if we have a token file
+                if os.path.exists(token_path):
+                    with open(token_path, 'rb') as token:
+                        try:
+                            creds = pickle.load(token)
+                            logger.info("Loaded OAuth credentials from token file")
+                        except Exception as e:
+                            logger.warning(f"Error loading token file: {str(e)}")
+                
+                # If there are no valid credentials, try to authenticate
+                if not creds or not creds.valid:
+                    if creds and creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+                        logger.info("Refreshed OAuth credentials")
+                    elif os.path.exists(credentials_path):
+                        try:
+                            # First try service account authentication from credentials_path
+                            if self._is_service_account(credentials_path):
+                                creds = service_account.Credentials.from_service_account_file(
+                                    credentials_path, 
+                                    scopes=['https://www.googleapis.com/auth/drive']
+                                )
+                                logger.info("Using service account authentication from credentials file")
+                            else:
+                                # Then try OAuth flow
+                                flow = InstalledAppFlow.from_client_secrets_file(
+                                    credentials_path,
+                                    ['https://www.googleapis.com/auth/drive']
+                                )
+                                creds = flow.run_local_server(port=0)
+                                logger.info("Completed OAuth authentication flow")
+                                
+                                # Save the credentials for the next run
+                                with open(token_path, 'wb') as token:
+                                    pickle.dump(creds, token)
+                                    logger.info(f"Saved OAuth token to {token_path}")
+                        except Exception as e:
+                            logger.error(f"Error during authentication: {str(e)}")
+                            raise
+                    else:
+                        logger.warning(f"Credentials file not found at {credentials_path}")
+                        # Try application default credentials as a last resort
+                        try:
+                            self.drive_service = build('drive', 'v3', credentials=None)
+                            logger.info("Using application default credentials")
+                            return
+                        except Exception as e:
+                            logger.error(f"Failed to use application default credentials: {str(e)}")
+                            raise
             
             # Create the Drive API client
             self.drive_service = build('drive', 'v3', credentials=creds)

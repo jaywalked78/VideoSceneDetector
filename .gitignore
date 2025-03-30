@@ -43,6 +43,9 @@ server.log
 token.pickle
 credentials.json
 
+# Service Account credentials
+serviceAccountAuth/
+
 # Temp files
 temp/
 tmp/
