@@ -410,10 +410,14 @@ def process_video_task(
         # Set webhook_sent for error handling
         webhook_sent = True
         
-        # STEP 2: Wait for 1 minute to allow Airtable to process the data
-        logger.info(f"===== WAITING 60 SECONDS BEFORE SENDING FRAME PROCESSOR WEBHOOK =====")
-        logger.info(f"Waiting 60 seconds to allow Airtable to process the data...")
-        time.sleep(60)
+        # STEP 2: Wait to allow Airtable to process the data - scaled based on frame count
+        frame_count = len(frames_info)
+        # Calculate wait time: 0.75 seconds per frame with a minimum of 15 seconds and maximum of 300 seconds (5 minutes)
+        wait_time_seconds = max(15, min(round(frame_count * 0.75), 300))
+        
+        logger.info(f"===== WAITING {wait_time_seconds} SECONDS BEFORE SENDING FRAME PROCESSOR WEBHOOK =====")
+        logger.info(f"Waiting {wait_time_seconds} seconds to allow Airtable to process {frame_count} frames (0.75s per frame)...")
+        time.sleep(wait_time_seconds)
         logger.info(f"Wait complete. Proceeding to send frame processor webhook.")
         
         # STEP 3: Only send the frame processor webhook if Google Drive upload was successful

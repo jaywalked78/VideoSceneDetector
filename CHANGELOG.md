@@ -2,6 +2,12 @@
 
 All notable changes to the VideoSceneDetector project will be documented in this file.
 
+## [1.2.2] - 2025-03-30
+
+### Changed
+- Improved webhook timing by replacing fixed 60-second delay with dynamic delay based on frame count
+- Now uses 0.75 seconds per frame (with 15-second minimum and 5-minute maximum) to prevent Airtable API throttling
+
 ## [1.2.1] - 2025-03-30
 
 ### Fixed
