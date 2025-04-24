@@ -13,7 +13,7 @@ flowchart TD
     B --> C[FRAME EXTRACTOR (This Repo)];
     C --> D(n8n: AI Enrichment + OCR Refinement + Airtable Upsert);
     D --> E(n8n: Trigger IntelliChunk);
-    E --> F{[IntelliChunk](https://github.com/jaywalked78/IntelliChunk) + [Image Server](https://github.com/jaywalked78/Lightweight-File-Hosting-Server)};
+    E --> F[[IntelliChunk](https://github.com/jaywalked78/IntelliChunk) + [Image Server](https://github.com/jaywalked78/Lightweight-File-Hosting-Server)];
     F --> G(n8n: Embedding Generation);
     G --> H[(PostgreSQL Vector DB)];
 ```
