@@ -12,7 +12,7 @@ flowchart TD
     B --> C[FRAME EXTRACTOR (This Repo)];
     C --> D(n8n: AI Enrichment + OCR Refinement + Airtable Upsert);
     D --> E(n8n: Trigger IntelliChunk);
-    E --> F[[IntelliChunk](https://github.com/jaywalked78/IntelliChunk) + [Image Server](https://github.com/jaywalked78/Lightweight-File-Hosting-Server)];
+    E --> F(IntelliChunk + Image Server);
     F --> G(n8n: Embedding Generation);
     G --> H[(PostgreSQL Vector DB)];
 ```
@@ -23,7 +23,7 @@ flowchart TD
 2.  The n8n workflow calls the `/api/v1/process-drive-video` or `/api/v1/process-video` endpoint of this `VideoSceneDetector` service.
 3.  This service processes the video, detects scenes, extracts relevant frames, and uploads them to a designated Google Drive folder.
 4.  Upon completion, it sends two webhooks (Frame Analysis and Frame Processor) back to n8n.
-5.  The `Frame Processor Webhook` triggers the next n8n workflow segment, which handles AI enrichment, OCR, Airtable updates, and eventually calls the [IntelliChunk](https://github.com/jaywalked78/IntelliChunk) service for semantic chunking.
+5.  The `Frame Processor Webhook` triggers the next n8n workflow segment, which handles AI enrichment, OCR, Airtable updates, and eventually calls the [IntelliChunk](https://github.com/jaywalked78/IntelliChunk) service for semantic chunking and the [Image Server](https://github.com/jaywalked78/Lightweight-File-Hosting-Server) for hosting.
 
 ## Features
 
