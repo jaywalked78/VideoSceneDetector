@@ -9,7 +9,7 @@ This Video Scene Detector service initiates the content processing pipeline for 
 ```mermaid
 flowchart TD
     A[Video Input] --> B(n8n: Trigger VIDEO SCENE DETECTOR)
-    B --> C[FRAME EXTRACTOR (This Repo)]
+    B --> C{FRAME EXTRACTOR (This Repo)}
     C --> D(n8n: AI Enrichment + OCR Refinement + Airtable Upsert)
     D --> E(n8n: Trigger IntelliChunk)
     E --> F(IntelliChunk + Image Server)
