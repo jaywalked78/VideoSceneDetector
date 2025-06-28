@@ -128,10 +128,32 @@ echo -e "${GREEN}Starting FastAPI server with live logging on port 8000...${NC}"
 echo -e "${YELLOW}Press Ctrl+C to stop the server${NC}"
 echo -e "${BLUE}==================================================${NC}"
 
+# Function to handle Ctrl+C gracefully
+cleanup() {
+    echo -e "\n${YELLOW}Received interrupt signal (Ctrl+C)${NC}"
+    echo -e "${YELLOW}Running graceful shutdown script...${NC}"
+    
+    # Run the force kill script
+    if [ -f "./force_kill_server.sh" ]; then
+        ./force_kill_server.sh
+    else
+        echo -e "${RED}force_kill_server.sh not found, using basic cleanup${NC}"
+        pkill -9 -f "uvicorn app.main:app" 2>/dev/null || true
+        kill_port_processes 8000
+    fi
+    
+    echo -e "${GREEN}Server shutdown complete!${NC}"
+    exit 0
+}
+
+# Trap Ctrl+C and call cleanup function
+trap cleanup SIGINT SIGTERM
+
 # Start uvicorn with debug log level
 # Important: Don't redirect output for live logging
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug 
+echo -e "${GREEN}Press Ctrl+C to gracefully shutdown the server${NC}"
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug &
 
-# Start the server with output going to both console and log file
-# Using stdbuf to disable buffering
-stdbuf -o0 -e0 node dist/main.js | tee -a "$LOG_FILE" 
+# Wait for the background process
+UVICORN_PID=$!
+wait $UVICORN_PID

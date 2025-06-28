@@ -1,0 +1,10 @@
+{
+    "file_id": "1X9SSekqD4oX98Ca5uQ17iQj4BZOb-z0-",
+    "download_account_type": "secondary",
+    "destination_folder": "/home/jason/Videos/screenRecordings",
+    "callback_url": "http://localhost:5678/webhook/9268d2b1-e4de-421e-9685-4c5aa5e79289",
+    "scene_threshold": 0.369,
+    "create_subfolder": true,
+    "delete_after_processing": true,
+    "force_download": false
+} 

@@ -46,6 +46,9 @@ credentials.json
 # Service Account credentials
 serviceAccountAuth/
 
+# Codebase state (contains sensitive info)
+.codebase_state.json
+
 # Temp files
 temp/
 tmp/

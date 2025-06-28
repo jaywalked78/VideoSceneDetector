@@ -133,10 +133,16 @@ async def process_drive_video(request: GoogleDriveVideoProcessRequest, backgroun
     try:
         # Initialize services for validation
         processor = VideoProcessor()
-        drive_service = GoogleDriveService()
+        
+        # Determine operation type based on download_account_type parameter
+        download_operation_type = "download_primary" if request.download_account_type == "primary" else "download_secondary"
+        logger.info(f"Using {request.download_account_type} account for download operations")
+        
+        # Use the specified account credentials to validate files
+        drive_service = GoogleDriveService(operation_type=download_operation_type)
         
         # Validate request by checking if file exists in Google Drive
-        logger.info("Validating Google Drive file exists")
+        logger.info(f"Validating Google Drive file exists using {request.download_account_type} account credentials")
         try:
             file_metadata = drive_service.get_file_metadata(request.file_id)
             file_name = request.file_name or file_metadata.get('name', f'video_{request.file_id}')
@@ -161,7 +167,8 @@ async def process_drive_video(request: GoogleDriveVideoProcessRequest, backgroun
             scene_threshold=request.scene_threshold,
             create_subfolder=request.create_subfolder,
             delete_after_processing=request.delete_after_processing,
-            force_download=request.force_download
+            force_download=request.force_download,
+            download_account_type=request.download_account_type
         )
         
         # Return clean success response without nulls
@@ -187,10 +194,11 @@ def process_video_task(
     file_name: str,
     destination_folder: str,
     callback_url: str,
-    scene_threshold: float = 0.4,
+    scene_threshold: float = float(os.getenv("SCENE_THRESHOLD", "0.4")),
     create_subfolder: bool = True,
     delete_after_processing: bool = False,
-    force_download: bool = False
+    force_download: bool = False,
+    download_account_type: str = "secondary"
 ):
     """
     Background task to process video file and send callback when complete.
@@ -198,6 +206,7 @@ def process_video_task(
     start_time = time.time()
     process_id = f"{int(start_time)}_{file_id[-6:]}"
     logger.info(f"Starting background process {process_id} for file: {file_name}")
+    logger.info(f"Using {download_account_type} account for downloads")
     
     # Add this to track if we've already sent a webhook
     webhook_sent = False
@@ -205,7 +214,12 @@ def process_video_task(
     try:
         # Initialize services
         processor = VideoProcessor()
-        drive_service = GoogleDriveService()
+        
+        # Determine operation type based on download_account_type parameter
+        download_operation_type = "download_primary" if download_account_type == "primary" else "download_secondary"
+        
+        # Use the specified account credentials for downloading files
+        download_drive_service = GoogleDriveService(operation_type=download_operation_type)
         
         # Create safe directory for video
         logger.info(f"Creating output directory in {destination_folder}")
@@ -225,14 +239,14 @@ def process_video_task(
             logger.info(f"File already exists at {download_path}. Skipping download.")
             download_result = download_path
         else:
-            # Download file from Google Drive
+            # Download file from Google Drive using specified account credentials
             if file_already_exists:
                 logger.info(f"File exists but force_download=True. Re-downloading file.")
             else:
                 logger.info(f"File doesn't exist locally. Downloading from Google Drive.")
                 
-            logger.info(f"Downloading file from Google Drive to {output_dir}")
-            success, download_result = drive_service.download_file(file_id, download_path)
+            logger.info(f"Downloading file from Google Drive to {output_dir} using {download_account_type} account")
+            success, download_result = download_drive_service.download_file(file_id, download_path)
             
             if not success:
                 error_msg = f"Failed to download file from Google Drive: {download_result}"
@@ -252,21 +266,30 @@ def process_video_task(
         
         logger.info(f"Using video file at: {download_path}")
         
-        # Extract frames using FFmpeg
-        logger.info(f"Extracting frames with scene_threshold={scene_threshold}")
-        success, extraction_result = processor.extract_frames(
+        # Extract frames and upload them in real-time using streaming method
+        logger.info(f"Starting streaming extraction and upload with scene_threshold={scene_threshold}")
+        success, streaming_result = processor.extract_frames_with_streaming_upload(
             download_path,
             output_dir,
-            scene_threshold=scene_threshold
+            scene_threshold=scene_threshold,
+            original_filename=file_name
         )
         
         if not success:
-            error_msg = f"Failed to extract frames: {extraction_result.get('error', 'Unknown error')}"
+            error_msg = f"Failed to extract and upload frames: {streaming_result.get('error', 'Unknown error')}"
             logger.error(error_msg)
+            
+            # Skip webhooks for actual FFmpeg processing errors (not user interruptions)
+            error_details = streaming_result.get('error', '')
+            if 'FFmpeg processing failed' in error_details or 'ffmpeg' in error_details.lower():
+                logger.info("Skipping webhook due to FFmpeg processing error")
+                webhook_sent = True
+                return
+            
             send_callback(callback_url, {
                 "success": False,
                 "message": error_msg,
-                "error": extraction_result.get('error', 'Unknown error'),
+                "error": streaming_result.get('error', 'Unknown error'),
                 "output_directory": output_dir,
                 "process_id": process_id,
                 "file_id": file_id,
@@ -276,7 +299,11 @@ def process_video_task(
             webhook_sent = True
             return
         
-        # Collect frame files info
+        # Get results from streaming process
+        drive_upload_result = streaming_result
+        extraction_result = streaming_result  # For compatibility with existing code
+        
+        # Collect frame files info for response
         frame_files = sorted(glob.glob(os.path.join(output_dir, "frame_*.jpg")))
         frames_info = []
         for frame_file in frame_files:
@@ -287,48 +314,33 @@ def process_video_task(
                 "size_bytes": frame_path.stat().st_size
             })
         
-        # Upload frames to Google Drive if we have frames
-        drive_upload_result = None
-        if frames_info:
-            logger.info(f"===== STARTING GOOGLE DRIVE UPLOAD =====")
-            logger.info(f"Uploading {len(frames_info)} frames to Google Drive from {output_dir}")
-            upload_success, drive_upload_result = VideoProcessor.upload_frames_to_drive(
-                output_dir=output_dir,
-                original_filename=file_name
-            )
-            if upload_success:
-                logger.info(f"===== GOOGLE DRIVE UPLOAD SUCCESS =====")
-                logger.info(f"Successfully uploaded frames to Google Drive: {drive_upload_result.get('folder_name')}")
-                logger.info(f"Folder ID: {drive_upload_result.get('folder_id')}")
-                logger.info(f"Drive URL: {drive_upload_result.get('drive_folder_url')}")
-                logger.info(f"Frames uploaded: {drive_upload_result.get('frames_uploaded')}/{drive_upload_result.get('total_frames')}")
-                logger.info(f"Upload time: {drive_upload_result.get('upload_time')} seconds")
-                
-                # Verify upload completeness before proceeding with webhooks
-                frames_uploaded = drive_upload_result.get('frames_uploaded', 0)
-                total_frames = drive_upload_result.get('total_frames', 0)
-                failed_uploads = drive_upload_result.get('frames_failed', 0)
-                
-                if frames_uploaded < (total_frames - failed_uploads):
-                    logger.warning(f"===== UPLOAD VERIFICATION FAILED =====")
-                    logger.warning(f"Not all frames were uploaded successfully: {frames_uploaded}/{total_frames}")
-                    logger.warning("Setting upload_success to False to prevent premature webhook triggering")
-                    upload_success = False
-                    
-                    # Update drive_upload_result with verification status
-                    drive_upload_result["success"] = False
-                    drive_upload_result["warning"] = f"Upload verification failed: {frames_uploaded}/{total_frames} frames uploaded"
-                else:
-                    logger.info(f"===== UPLOAD VERIFICATION SUCCESSFUL =====")
-                    logger.info(f"All required frames were uploaded successfully: {frames_uploaded}/{total_frames}")
-                    
-                    # Ensure drive_upload_result has success flag
-                    drive_upload_result["success"] = True
-            else:
-                logger.error(f"===== GOOGLE DRIVE UPLOAD FAILED =====")
-                logger.error(f"Failed to upload frames to Google Drive: {drive_upload_result.get('error', 'Unknown error')}")
-                if 'details' in drive_upload_result:
-                    logger.error(f"Error details: {drive_upload_result.get('details')}")
+        logger.info(f"===== STREAMING PROCESS COMPLETE =====")
+        logger.info(f"Successfully processed and uploaded frames: {drive_upload_result.get('folder_name')}")
+        logger.info(f"Folder ID: {drive_upload_result.get('folder_id')}")
+        logger.info(f"Drive URL: {drive_upload_result.get('drive_folder_url')}")
+        logger.info(f"Frames uploaded: {drive_upload_result.get('frames_uploaded')}/{drive_upload_result.get('total_frames')}")
+        logger.info(f"Processing time: {drive_upload_result.get('processing_time')} seconds")
+        
+        # Verify upload completeness before proceeding with webhooks
+        frames_uploaded = drive_upload_result.get('frames_uploaded', 0)
+        total_frames = drive_upload_result.get('total_frames', 0)
+        failed_uploads = drive_upload_result.get('frames_failed', 0)
+        
+        if frames_uploaded < (total_frames - failed_uploads):
+            logger.warning(f"===== UPLOAD VERIFICATION FAILED =====")
+            logger.warning(f"Not all frames were uploaded successfully: {frames_uploaded}/{total_frames}")
+            logger.warning("Setting success to False to prevent premature webhook triggering")
+            success = False
+            
+            # Update drive_upload_result with verification status
+            drive_upload_result["success"] = False
+            drive_upload_result["warning"] = f"Upload verification failed: {frames_uploaded}/{total_frames} frames uploaded"
+        else:
+            logger.info(f"===== UPLOAD VERIFICATION SUCCESSFUL =====")
+            logger.info(f"All required frames were uploaded successfully: {frames_uploaded}/{total_frames}")
+            
+            # Ensure drive_upload_result has success flag
+            drive_upload_result["success"] = True
         
         # Prepare final callback data with complete metadata
         total_processing_time = time.time() - start_time
@@ -412,8 +424,11 @@ def process_video_task(
         
         # STEP 2: Wait to allow Airtable to process the data - scaled based on frame count
         frame_count = len(frames_info)
-        # Calculate wait time: 0.75 seconds per frame with a minimum of 15 seconds and maximum of 300 seconds (5 minutes)
-        wait_time_seconds = max(15, min(round(frame_count * 0.75), 300))
+        # Calculate wait time: configurable seconds per frame with configurable min/max values
+        delay_min = int(os.getenv("WEBHOOK_DELAY_MIN", "15"))
+        delay_per_frame = float(os.getenv("WEBHOOK_DELAY_PER_FRAME", "0.75"))
+        delay_max = int(os.getenv("WEBHOOK_DELAY_MAX", "300"))
+        wait_time_seconds = max(delay_min, min(round(frame_count * delay_per_frame), delay_max))
         
         logger.info(f"===== WAITING {wait_time_seconds} SECONDS BEFORE SENDING FRAME PROCESSOR WEBHOOK =====")
         logger.info(f"Waiting {wait_time_seconds} seconds to allow Airtable to process {frame_count} frames (0.75s per frame)...")
@@ -516,7 +531,7 @@ def send_callback(callback_url: str, data: dict) -> bool:
             callback_url,
             json=data,
             headers={"Content-Type": "application/json"},
-            timeout=30
+            timeout=float(os.getenv("REQUEST_TIMEOUT", "300"))
         )
         
         if response.status_code >= 200 and response.status_code < 300:

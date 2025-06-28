@@ -12,7 +12,7 @@ logger = logging.getLogger("gradio-client")
 
 # Constants
 GRADIO_URL = os.getenv("GRADIO_URL", "http://localhost:7860")
-TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "30.0"))
+TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "300"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 
 class GradioClient:

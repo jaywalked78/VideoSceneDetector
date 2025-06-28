@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class GoogleDriveService:
-    def __init__(self, credentials_path: Optional[str] = None, token_path: Optional[str] = None):
+    def __init__(self, credentials_path: Optional[str] = None, token_path: Optional[str] = None, operation_type: str = "upload"):
         """
         Initialize the Google Drive service
         
@@ -30,24 +30,54 @@ class GoogleDriveService:
             credentials_path: Path to the credentials JSON file (service account or OAuth)
                               If None, tries to use environment variable or default path
             token_path: Path to save/load OAuth token (default: token.pickle)
+            operation_type: Type of operation to determine which credentials to use:
+                          - 'upload': Use primary account credentials for uploads
+                          - 'download': Use secondary account credentials for downloads (legacy)
+                          - 'download_primary': Use primary account credentials for downloads
+                          - 'download_secondary': Use secondary account credentials for downloads
         """
         self.drive_service = None
+        self.operation_type = operation_type
         
-        # First check if service account is enabled and file is specified
-        use_service_account = os.getenv("GOOGLE_DRIVE_USE_SERVICE_ACCOUNT", "").lower() == "true"
-        service_account_file = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE", "")
+        # Determine which set of environment variables to use based on operation type
+        if operation_type in ["download", "download_secondary"]:
+            # Use download-specific credentials (secondary account)
+            use_service_account = os.getenv("GOOGLE_DOWNLOAD_USE_SERVICE_ACCOUNT", "").lower() == "true"
+            service_account_file = os.getenv("GOOGLE_DOWNLOAD_SERVICE_ACCOUNT_FILE", "")
+            default_credentials = os.getenv("GOOGLE_DOWNLOAD_CREDENTIALS", "")
+            default_token = os.getenv("GOOGLE_DOWNLOAD_TOKEN", "download_token.pickle")
+            logger.info(f"Initializing GoogleDriveService for {operation_type} operations using secondary account credentials")
+        elif operation_type in ["upload", "download_primary"]:
+            # Use upload-specific credentials (primary account) with fallback to legacy variables
+            use_service_account = os.getenv("GOOGLE_UPLOAD_USE_SERVICE_ACCOUNT", 
+                                           os.getenv("GOOGLE_DRIVE_USE_SERVICE_ACCOUNT", "")).lower() == "true"
+            service_account_file = os.getenv("GOOGLE_UPLOAD_SERVICE_ACCOUNT_FILE", 
+                                           os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE", ""))
+            default_credentials = os.getenv("GOOGLE_UPLOAD_CREDENTIALS", 
+                                          os.getenv("GOOGLE_CREDENTIALS", ""))
+            default_token = os.getenv("GOOGLE_UPLOAD_TOKEN", 
+                                    os.getenv("GOOGLE_TOKEN", "token.pickle"))
+            account_type = "primary" if operation_type == "download_primary" else "primary"
+            logger.info(f"Initializing GoogleDriveService for {operation_type} operations using {account_type} account credentials")
+        else:
+            # Fallback to legacy behavior for backward compatibility
+            use_service_account = os.getenv("GOOGLE_DRIVE_USE_SERVICE_ACCOUNT", "").lower() == "true"
+            service_account_file = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE", "")
+            default_credentials = os.getenv("GOOGLE_CREDENTIALS", "")
+            default_token = os.getenv("GOOGLE_TOKEN", "token.pickle")
+            logger.info(f"Initializing GoogleDriveService with legacy credentials (operation_type: {operation_type})")
         
         # Expand home directory if needed
         if service_account_file and '~' in service_account_file:
             service_account_file = os.path.expanduser(service_account_file)
         
-        # Try to get credentials path from environment if not provided
+        # Try to get credentials path from parameter or environment
         if not credentials_path:
-            credentials_path = os.getenv("GOOGLE_CREDENTIALS", "credentials.json")
+            credentials_path = default_credentials or "credentials.json"
         
         # Set token path
         if not token_path:
-            token_path = os.getenv("GOOGLE_TOKEN", "token.pickle")
+            token_path = default_token
         
         try:
             creds = None
@@ -60,7 +90,7 @@ class GoogleDriveService:
                         service_account_file, 
                         scopes=['https://www.googleapis.com/auth/drive']
                     )
-                    logger.info("Successfully loaded service account credentials")
+                    logger.info(f"Successfully loaded service account credentials for {operation_type}")
                 except Exception as e:
                     logger.error(f"Failed to use service account file: {str(e)}")
                     logger.info("Falling back to OAuth authentication")
@@ -72,7 +102,7 @@ class GoogleDriveService:
                     with open(token_path, 'rb') as token:
                         try:
                             creds = pickle.load(token)
-                            logger.info("Loaded OAuth credentials from token file")
+                            logger.info(f"Loaded OAuth credentials from token file for {operation_type}")
                         except Exception as e:
                             logger.warning(f"Error loading token file: {str(e)}")
                 
@@ -80,7 +110,7 @@ class GoogleDriveService:
                 if not creds or not creds.valid:
                     if creds and creds.expired and creds.refresh_token:
                         creds.refresh(Request())
-                        logger.info("Refreshed OAuth credentials")
+                        logger.info(f"Refreshed OAuth credentials for {operation_type}")
                     elif os.path.exists(credentials_path):
                         try:
                             # First try service account authentication from credentials_path
@@ -89,7 +119,7 @@ class GoogleDriveService:
                                     credentials_path, 
                                     scopes=['https://www.googleapis.com/auth/drive']
                                 )
-                                logger.info("Using service account authentication from credentials file")
+                                logger.info(f"Using service account authentication from credentials file for {operation_type}")
                             else:
                                 # Then try OAuth flow
                                 flow = InstalledAppFlow.from_client_secrets_file(
@@ -97,32 +127,32 @@ class GoogleDriveService:
                                     ['https://www.googleapis.com/auth/drive']
                                 )
                                 creds = flow.run_local_server(port=0)
-                                logger.info("Completed OAuth authentication flow")
+                                logger.info(f"Completed OAuth authentication flow for {operation_type}")
                                 
                                 # Save the credentials for the next run
                                 with open(token_path, 'wb') as token:
                                     pickle.dump(creds, token)
-                                    logger.info(f"Saved OAuth token to {token_path}")
+                                    logger.info(f"Saved OAuth token to {token_path} for {operation_type}")
                         except Exception as e:
-                            logger.error(f"Error during authentication: {str(e)}")
+                            logger.error(f"Error during authentication for {operation_type}: {str(e)}")
                             raise
                     else:
-                        logger.warning(f"Credentials file not found at {credentials_path}")
+                        logger.warning(f"Credentials file not found at {credentials_path} for {operation_type}")
                         # Try application default credentials as a last resort
                         try:
                             self.drive_service = build('drive', 'v3', credentials=None)
-                            logger.info("Using application default credentials")
+                            logger.info(f"Using application default credentials for {operation_type}")
                             return
                         except Exception as e:
-                            logger.error(f"Failed to use application default credentials: {str(e)}")
+                            logger.error(f"Failed to use application default credentials for {operation_type}: {str(e)}")
                             raise
             
             # Create the Drive API client
             self.drive_service = build('drive', 'v3', credentials=creds)
-            logger.info("Successfully initialized Google Drive service")
+            logger.info(f"Successfully initialized Google Drive service for {operation_type}")
             
         except Exception as e:
-            logger.error(f"Failed to initialize Google Drive service: {str(e)}")
+            logger.error(f"Failed to initialize Google Drive service for {operation_type}: {str(e)}")
             raise
     
     def _is_service_account(self, credentials_path: str) -> bool:
